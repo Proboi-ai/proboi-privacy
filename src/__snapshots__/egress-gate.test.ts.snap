@@ -1,0 +1,11 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`egress-gate: golden — детерминированная структура де-ид (не LLM-текст) golden: профиль strict на фиксированном примере — деид полностью детерминирован (regex/Natasha, без сети) 1`] = `
+{
+  "component": "text-deid",
+  "entities": 5,
+  "lowConfidence": 0,
+  "profile": "strict",
+  "text": "Скважина [PER_01] на [COORD_01] — участок [ORG_01], дело [CASE_01] от [DATE_01].",
+}
+`;

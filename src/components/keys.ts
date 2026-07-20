@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { dlopen, FFIType, ptr, toArrayBuffer, type Pointer } from 'bun:ffi';
 import type { PrivacyComponent } from '../types';
+import { sealKek, openKek, type KmsProvider } from './kms';
 
 // Параметры scrypt — прод-уровень OWASP (было 16384, поднято по TODO в этом же файле).
 const SCRYPT_N = 65536;
@@ -385,9 +386,14 @@ export function createKeysComponent(opts?: {
   keyDir?: string;
   keyfilePath?: string;
   dpapi?: DpapiLike;
+  // Клиентский KMS/HSM для обёртки KEK. Если задан — KEK на диске лежит обёрнутый ЕГО ключом
+  // (самоописывающийся блоб `<id>:v1:…`), и раннер сам его не расшифрует. Не задан → прежний
+  // локальный путь (DPAPI/keyfile), байт-в-байт.
+  kms?: KmsProvider;
 }): KeysComponent {
   let _kek: CryptoKey | null = opts?.kek ?? null;
   const keyDir = opts?.keyDir;
+  const kms = opts?.kms;
   const keyfilePath = opts?.keyfilePath ?? process.env.PRIVACY_KEK_KEYFILE;
   const dpapi: DpapiLike =
     opts?.dpapi ??
@@ -420,20 +426,21 @@ export function createKeysComponent(opts?: {
 
       const kekPath = join(keyDir, 'kek.dpapi');
 
-      // Первый запуск после установки: файла нет → сгенерировать, защитить DPAPI, сохранить.
+      // Первый запуск после установки: файла нет → сгенерировать, защитить, сохранить.
+      // При kms — обёртка клиентским KMS/HSM (самоописывающийся блоб), иначе DPAPI/keyfile.
       if (!existsSync(kekPath)) {
         const kek = await generateKek();
         const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kek));
-        const protectedBytes = await dpapi.protect(raw);
+        const protectedBytes = kms ? await sealKek(kms, raw) : await dpapi.protect(raw);
         mkdirSync(keyDir, { recursive: true });
         writeFileSync(kekPath, Buffer.from(protectedBytes));
         _kek = kek;
         return _kek;
       }
 
-      // Повторный запуск: снять DPAPI-защиту с сохранённого файла и восстановить KEK.
+      // Повторный запуск: снять защиту с сохранённого файла и восстановить KEK.
       const protectedBytes = new Uint8Array(readFileSync(kekPath));
-      const raw = await dpapi.unprotect(protectedBytes);
+      const raw = kms ? await openKek(protectedBytes, { [kms.id]: kms }) : await dpapi.unprotect(protectedBytes);
       _kek = await crypto.subtle.importKey('raw', toAb(raw), { name: 'AES-KW' }, true, ['wrapKey', 'unwrapKey']);
       return _kek;
     },

@@ -16,14 +16,16 @@ import type { TokenVault } from "../vault";
 import type { SidecarManager } from "../sidecar";
 import { detectEntities, resolveOverlaps, type DetectedEntity, type EntityType } from "../deid/detect";
 
-// Дефолт (без COORD): координаты токенизируем ТОЛЬКО по явному профилю geo, а не
-// «на всякий случай» — иначе метровые/десятичные числа плодят ложные срабатывания.
+// Дефолт (без COORD/PASSPORT/INN/PHONE): координаты токенизируем ТОЛЬКО по явному профилю
+// geo, а паспорт/ИНН/телефон — по явному запросу — иначе метровые/десятичные числа
+// и случайные 10-значные последовательности плодят ложные срабатывания на дефолте.
 const ALL_TYPES: EntityType[] = ["PER", "ORG", "DATE", "CASE"];
-// Допустимые в cfg.entities типы (шире дефолта): COORD валиден для geo-профиля.
-const ACCEPTED_TYPES: EntityType[] = [...ALL_TYPES, "COORD"];
-// Natasha NER покрывает только PER/ORG — даты/№дел/координаты остаются на TS-слое.
+// Допустимые в cfg.entities типы (шире дефолта): COORD валиден для geo-профиля,
+// PASSPORT/INN/PHONE — для standard/strict.
+const ACCEPTED_TYPES: EntityType[] = [...ALL_TYPES, "COORD", "PASSPORT", "INN", "PHONE"];
+// Natasha NER покрывает только PER/ORG — остальные типы остаются на TS-слое.
 const SIDECAR_TYPES: EntityType[] = ["PER", "ORG"];
-const TOKEN_RE = /\[(?:PER|ORG|DATE|CASE|COORD)_\d+\]/g;
+const TOKEN_RE = /\[(?:PER|ORG|DATE|CASE|COORD|PASSPORT|INN|PHONE)_\d+\]/g;
 
 function readTypes(cfg: Record<string, unknown>): EntityType[] {
   const raw = cfg.entities;

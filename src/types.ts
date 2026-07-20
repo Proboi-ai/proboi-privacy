@@ -67,10 +67,12 @@ export interface StoredConfig {
   components: Record<string, { enabled: boolean; config: Record<string, unknown> }>;
 }
 
-// Компонент включён, но недоступен (fail-closed)
+// Компонент включён, но недоступен (fail-closed).
+// reason (необяз.) — человекочитаемая причина блокировки для логов; без неё —
+// прежнее generic-сообщение (обратная совместимость с одноаргументными вызовами).
 export class PrivacyBlockedError extends Error {
-  constructor(componentId: string) {
-    super(`Privacy component "${componentId}" is enabled but not available (fail-closed)`);
+  constructor(componentId: string, reason?: string) {
+    super(reason ?? `Privacy component "${componentId}" is enabled but not available (fail-closed)`);
     this.name = 'PrivacyBlockedError';
   }
 }
