@@ -76,6 +76,15 @@ export class TokenVault {
     return this.byToken.get(token);
   }
 
+  /**
+   * Список выданных токенов — БЕЗ оригиналов (deid/restore.ts строит по нему индекс для
+   * нечёткого сопоставления). Наружу не отдаём ничего, кроме самих ярлыков `[TYPE_NN]`:
+   * они не содержат производной от исходного значения, так что список безопасно логировать.
+   */
+  tokens(): string[] {
+    return [...this.byToken.keys()];
+  }
+
   size(): number {
     return this.byToken.size;
   }
