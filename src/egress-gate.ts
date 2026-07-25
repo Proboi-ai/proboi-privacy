@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { TokenVault } from "./vault";
 import { tokenizeText, detokenizeText } from "./components/text-deid";
 import type { EntityType } from "./deid/detect";
+import { restoreText, type RestoreResult } from "./deid/restore";
 import { PrivacyBlockedError } from "./types";
 import type { VaultStore } from "./vault-store";
 
@@ -27,12 +28,24 @@ export interface EgressReceipt {
   lowConfidence: number;
   profile: string;
   hashPostRedaction: string;
+  /** Только у квитанции возврата (`text-deid-restore`): сколько ярлыков подставлено обратно. */
+  restored?: number;
+  /** Только у квитанции возврата: сколько ярлыков привязать не удалось (§7.4 спеки). */
+  orphans?: number;
 }
 
 export interface EgressResult {
   text: string;
   receipt: EgressReceipt;
+  /** Возврат оригиналов. Сигнатура не менялась — все существующие вызовы целы. */
   reidentify: (reply: string) => string;
+  /**
+   * Возврат с отчётом: что восстановилось, на каком уровне, что осталось висеть.
+   * Нужен вызывающей стороне, чтобы показать пользователю «не удалось восстановить N значений»
+   * (§7.5 спеки) — через `describeOrphans` из `deid/restore`.
+   * Пишет квитанцию `text-deid-restore` в аудит (счётчики, не значения).
+   */
+  reidentifyDetailed: (reply: string) => RestoreResult;
 }
 
 /**
@@ -66,6 +79,15 @@ let warnedNoopProfile = false;
 /** Явно ли разрешён passthrough при незанастроенном профиле (локальная модель / не-ПДн). */
 function passthroughExplicitlyAllowed(): boolean {
   return process.env.PRIVACY_ALLOW_PASSTHROUGH === "1";
+}
+
+/**
+ * Уровни 2–3 возврата (Трек C): регистр, ведущий ноль, тире/пробел/перенос, разметка,
+ * искажённое имя типа. Дефолт в КОДЕ — выкл: инвариант волны требует, чтобы без флагов
+ * поведение совпадало с прежним байт-в-байт, а профиль on-prem выставляет флаг сам (§13 спеки).
+ */
+function restoreFuzzyEnabled(): boolean {
+  return process.env.PRIVACY_RESTORE_FUZZY === "1";
 }
 
 function activeProfile(): string {
@@ -233,6 +255,38 @@ function makeReceipt(component: string, deid: string, count: number, lowConfiden
 }
 
 /**
+ * Собирает пару «возврат оригиналов» для `EgressResult`.
+ *
+ * `reidentify` при выключенном флаге идёт СТАРЫМ путём (`detokenizeText`) — так «байт-в-байт»
+ * гарантируется самим кодом, а не рассуждением о совпадении двух реализаций.
+ * `reidentifyDetailed` доступен всегда: посчитать отчёт бесплатно, а показывать его
+ * или нет — решает вызывающая сторона.
+ */
+function makeRestorers(vault: TokenVault, profile: string): Pick<EgressResult, "reidentify" | "reidentifyDetailed"> {
+  const detailed = (reply: string): RestoreResult => {
+    const r = restoreText(reply, vault, { fuzzy: restoreFuzzyEnabled() });
+    // Квитанция возврата: ТОЛЬКО счётчики, ни оригиналов, ни ярлыков.
+    persistReceipt({
+      ts: Date.now(),
+      component: "text-deid-restore",
+      entities: r.restored + r.orphans.length,
+      lowConfidence: 0,
+      profile,
+      hashPostRedaction: createHash("sha256").update(r.text).digest("hex"),
+      restored: r.restored,
+      orphans: r.orphans.length,
+    });
+    return r;
+  };
+
+  return {
+    reidentify: (reply: string) =>
+      restoreFuzzyEnabled() ? detailed(reply).text : detokenizeText(reply, vault),
+    reidentifyDetailed: detailed,
+  };
+}
+
+/**
  * Де-идентифицирует исходящий текст ПЕРЕД облаком: детект+токенизация по активному профилю,
  * квитанция (хеш POST-редакции, не оригинала), персист аудита, ре-идентификатор для
  * ответа модели. НЕ ловит исключения tokenizeText — см. fail-closed выше.
@@ -248,11 +302,7 @@ export async function deidentifyOutbound(text: string, userId?: string): Promise
   const { text: deid, count, lowConfidence, profile } = tokenizeForProfile(text, vault);
   const receipt = makeReceipt("text-deid", deid, count, lowConfidence, profile);
 
-  return {
-    text: deid,
-    receipt,
-    reidentify: (reply: string) => detokenizeText(reply, vault),
-  };
+  return { text: deid, receipt, ...makeRestorers(vault, profile) };
 }
 
 /**
@@ -270,11 +320,7 @@ export async function deidentifyToolOutput(text: string, userId?: string): Promi
   const { text: deid, count, lowConfidence, profile } = tokenizeForProfile(text, vault);
   const receipt = makeReceipt("text-deid-tool", deid, count, lowConfidence, profile);
 
-  return {
-    text: deid,
-    receipt,
-    reidentify: (reply: string) => detokenizeText(reply, vault),
-  };
+  return { text: deid, receipt, ...makeRestorers(vault, profile) };
 }
 
 const MAX_WALK_DEPTH = 8; // защита от патологически вложенных/циклических tool_response
