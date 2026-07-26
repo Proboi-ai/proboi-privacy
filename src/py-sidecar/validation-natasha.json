@@ -1,0 +1,64 @@
+{
+  "fixture": "/Users/evgeniy/projects/proboi-privacy/src/py-sidecar/fixtures/geo_report_sample.jsonl",
+  "rows_evaluated": 20,
+  "types_evaluated": [
+    "PER",
+    "ORG"
+  ],
+  "stats": {
+    "OVERALL": {
+      "exact": {
+        "tp": 12,
+        "fp": 9,
+        "fn": 7,
+        "precision": 0.5714,
+        "recall": 0.6316,
+        "f1": 0.6
+      },
+      "overlap": {
+        "tp": 19,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.9048,
+        "recall": 1.0,
+        "f1": 0.95
+      }
+    },
+    "PER": {
+      "exact": {
+        "tp": 11,
+        "fp": 3,
+        "fn": 1,
+        "precision": 0.7857,
+        "recall": 0.9167,
+        "f1": 0.8462
+      },
+      "overlap": {
+        "tp": 12,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.8571,
+        "recall": 1.0,
+        "f1": 0.9231
+      }
+    },
+    "ORG": {
+      "exact": {
+        "tp": 1,
+        "fp": 6,
+        "fn": 6,
+        "precision": 0.1429,
+        "recall": 0.1429,
+        "f1": 0.1429
+      },
+      "overlap": {
+        "tp": 7,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  }
+}

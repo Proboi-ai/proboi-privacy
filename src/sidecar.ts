@@ -16,8 +16,19 @@
 import type { FileSink } from "bun";
 import { PRIVACY_SIDECAR_CMD } from "./config";
 import type { DetectedEntity, EntityType } from "./deid/detect";
+import type { MorphForm } from "./deid/morph";
 
 export type SidecarStatus = "absent" | "healthy" | "down";
+export interface SidecarHealth {
+  ok?: boolean;
+  natasha?: boolean;
+  gliner?: boolean;
+  active_profile?: string;
+  model?: string | null;
+  threshold?: number | null;
+  model_status?: string | null;
+  release_status?: string | null;
+}
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -35,6 +46,8 @@ export class SidecarManager {
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private cmd: string[];
+  private _health: SidecarHealth = {};
+  private activeVertical = process.env.PRIVACY_VERTICAL ?? "common";
 
   constructor(cmd?: string[]) {
     this.cmd = cmd ?? parseCmd(PRIVACY_SIDECAR_CMD);
@@ -44,6 +57,10 @@ export class SidecarManager {
   /** Синхронный кэшированный статус. */
   status(): SidecarStatus {
     return this._status;
+  }
+
+  healthDetails(): SidecarHealth {
+    return { ...this._health };
   }
 
   /** Поднимает сайдкар и проверяет health. Идемпотентно если уже жив. */
@@ -77,6 +94,29 @@ export class SidecarManager {
     return r.entities ?? [];
   }
 
+  async deidGliner(text: string, vertical: string): Promise<DetectedEntity[]> {
+    this.activeVertical = vertical;
+    const r = (await this.request("deid_gliner", { text, vertical }, 60_000)) as {
+      entities?: DetectedEntity[];
+    };
+    return r.entities ?? [];
+  }
+
+  async morphAnalyze(
+    text: string,
+    type: EntityType,
+  ): Promise<{ lemma: string; form: MorphForm } | null> {
+    return await this.request("morph_analyze", { text, type }) as {
+      lemma: string;
+      form: MorphForm;
+    } | null;
+  }
+
+  async agreeWithNumber(n: number, lemma: string): Promise<string> {
+    const result = await this.request("agree_with_number", { n, lemma }) as { value: string };
+    return result.value;
+  }
+
   async stop(): Promise<void> {
     const p = this.proc;
     this.proc = null;
@@ -102,9 +142,16 @@ export class SidecarManager {
 
   private async pingHealth(): Promise<boolean> {
     try {
-      await this.request("health", {}, 3000);
+      const engine = process.env.PRIVACY_NER_ENGINE ?? "natasha";
+      const timeout = engine === "gliner" || engine === "both" ? 120_000 : 3000;
+      this._health = await this.request(
+        "health",
+        { vertical: this.activeVertical },
+        timeout,
+      ) as SidecarHealth;
       return true;
     } catch {
+      this._health = {};
       return false;
     }
   }

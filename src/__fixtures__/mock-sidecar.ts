@@ -24,20 +24,58 @@ for await (const chunk of Bun.stdin.stream()) {
     const line = buf.slice(0, nl).trim();
     buf = buf.slice(nl + 1);
     if (!line) continue;
-    let req: { id: number; method: string; params: { text?: string; types?: string[] } };
+    let req: {
+      id: number;
+      method: string;
+      params: { text?: string; type?: string; types?: string[]; n?: number; lemma?: string };
+    };
     try {
       req = JSON.parse(line);
     } catch {
       continue;
     }
     if (req.method === "health") {
-      respond({ id: req.id, ok: true, result: { ok: true } });
+      respond({
+        id: req.id,
+        ok: true,
+        result: {
+          ok: true,
+          active_profile: "common",
+          model: "mock-model",
+          threshold: 0.5,
+          model_status: "unloaded",
+        },
+      });
     } else if (req.method === "deid") {
       const text = req.params?.text ?? "";
       const entities = text
         ? [{ type: "PER", raw: text.slice(0, 5), index: 0, confidence: "high" }]
         : [];
       respond({ id: req.id, ok: true, result: { entities } });
+    } else if (req.method === "deid_gliner") {
+      const text = req.params?.text ?? "";
+      if (text.includes("GLINER_FAIL")) {
+        respond({ id: req.id, ok: false, error: "forced GLiNER failure" });
+        continue;
+      }
+      const raw = text.slice(-5);
+      respond({
+        id: req.id,
+        ok: true,
+        result: {
+          entities: text
+            ? [{ type: "FIELD", raw, index: text.length - raw.length, confidence: "high" }]
+            : [],
+        },
+      });
+    } else if (req.method === "morph_analyze") {
+      respond({
+        id: req.id,
+        ok: true,
+        result: { lemma: "иванов", form: { case: "dat", gender: "masc", number: "sing" } },
+      });
+    } else if (req.method === "agree_with_number") {
+      respond({ id: req.id, ok: true, result: { value: req.params.n === 2 ? "скважины" : "скважин" } });
     } else {
       respond({ id: req.id, ok: false, error: `unknown method: ${req.method}` });
     }

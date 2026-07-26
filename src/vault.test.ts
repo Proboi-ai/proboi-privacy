@@ -49,6 +49,24 @@ describe("TokenVault: durable через memoryVaultStore", () => {
     expect(vb.size()).toBe(0); // чужой скоуп не виден
     expect(vb.tokenFor("PER", "Петров")).toBe("[PER_01]");
   });
+
+  test("метаданные суррогата переживают рестарт", () => {
+    const store = memoryVaultStore();
+    const v1 = new TokenVault({ store, scope: "user-1" });
+    const token = v1.tokenFor("PER", "Иванов И.И.");
+    v1.setSurface(token, {
+      surface: "Смирнов А.А.",
+      lemma: "Иванов И.И.",
+      morph: { case: "nom", gender: "masc" },
+    });
+
+    const v2 = new TokenVault({ store, scope: "user-1" });
+    expect(v2.entry(token)).toMatchObject({
+      raw: "Иванов И.И.",
+      surface: "Смирнов А.А.",
+      morph: { case: "nom", gender: "masc" },
+    });
+  });
 });
 
 describe("TokenVault: durable через sqlite — ПЕРЕЖИВАЕТ рестарт раннера", () => {

@@ -11,6 +11,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { BUILTIN_PROFILES } from './profiles';
+import type { Vertical } from './deid/entities';
 import type { StoredConfig } from './types';
 
 export interface ProvisionChoice {
@@ -23,10 +24,26 @@ export interface ProvisionChoice {
   host?: string;
   /** Команда Python-сайдкара. Пусто → сайдкар absent. */
   sidecarCmd?: string;
+  /** On-prem default is surrogate; code/hosting defaults remain placeholder. */
+  hideMode?: 'placeholder' | 'surrogate';
+  morph?: 'off' | 'local' | 'sidecar' | 'auto';
+  nerEngine?: 'natasha' | 'gliner' | 'both';
+  /** Локальный путь/ID веса GLiNER; процесс sidecar наследует env. */
+  glinerModel?: string;
+  /** Локальный JSON с переключаемыми профилями model/labels/threshold. */
+  glinerModelsConfig?: string;
+  glinerThreshold?: number;
+  vertical?: Vertical;
 }
 
 const BEGIN = '# >>> privacy (managed by scripts/privacy-provision.ts) >>>';
 const END = '# <<< privacy <<<';
+
+function resolvedNerEngine(
+  c: Pick<ProvisionChoice, 'nerEngine' | 'glinerModel' | 'glinerModelsConfig'>,
+): 'natasha' | 'gliner' | 'both' {
+  return c.nerEngine ?? (c.glinerModel || c.glinerModelsConfig ? 'both' : 'natasha');
+}
 
 /** Рендер управляемого блока PRIVACY_* env. Ключи — только те, что реально читаются. */
 export function renderPrivacyEnv(c: ProvisionChoice): string {
@@ -37,6 +54,13 @@ export function renderPrivacyEnv(c: ProvisionChoice): string {
     `PRIVACY_BACKEND_HOST=${c.host ?? '127.0.0.1'}`,
     `PRIVACY_BACKEND_PORT=${c.port ?? 7090}`,
     `PRIVACY_SIDECAR_CMD=${c.sidecarCmd ?? ''}`,
+    `PRIVACY_HIDE_MODE=${c.hideMode ?? (c.enable ? 'surrogate' : 'placeholder')}`,
+    `PRIVACY_MORPH=${c.morph ?? 'auto'}`,
+    `PRIVACY_NER_ENGINE=${resolvedNerEngine(c)}`,
+    ...(c.glinerModel ? [`PRIVACY_GLINER_MODEL=${c.glinerModel}`] : []),
+    ...(c.glinerModelsConfig ? [`PRIVACY_GLINER_MODELS_CONFIG=${c.glinerModelsConfig}`] : []),
+    ...(c.glinerThreshold !== undefined ? [`PRIVACY_GLINER_THRESHOLD=${c.glinerThreshold}`] : []),
+    `PRIVACY_VERTICAL=${c.vertical ?? ''}`,
     END,
   ];
   return lines.join('\n');
@@ -62,7 +86,10 @@ export function upsertEnvBlock(existing: string, block: string): string {
  * Раскладывает встроенный профиль в StoredConfig: включённые компоненты + их конфиг.
  * Неизвестный профиль → бросает (деплой должен упасть явно, а не молча взять base).
  */
-export function buildStoredConfig(profileId: string): StoredConfig {
+export function buildStoredConfig(
+  profileId: string,
+  textConfig?: { hideMode?: string; morph?: string; nerEngine?: string; vertical?: Vertical },
+): StoredConfig {
   const profile = BUILTIN_PROFILES.find((p) => p.id === profileId);
   if (!profile) {
     throw new Error(
@@ -72,6 +99,14 @@ export function buildStoredConfig(profileId: string): StoredConfig {
   const components: StoredConfig['components'] = {};
   for (const [id, entry] of Object.entries(profile.components)) {
     components[id] = { enabled: entry.enabled, config: entry.config ?? {} };
+  }
+  if (components['text-deid'] && textConfig) {
+    const config = components['text-deid']!.config;
+    if (textConfig.vertical) delete config.entities;
+    components['text-deid']!.config = {
+      ...config,
+      ...textConfig,
+    };
   }
   return { activeProfile: profile.id, components };
 }
@@ -119,10 +154,22 @@ export function provision(opts: ProvisionOpts): ProvisionResult {
     port: opts.port,
     host: opts.host,
     sidecarCmd: opts.sidecarCmd,
+    hideMode: opts.hideMode,
+    morph: opts.morph,
+    nerEngine: opts.nerEngine,
+    glinerModel: opts.glinerModel,
+    glinerModelsConfig: opts.glinerModelsConfig,
+    glinerThreshold: opts.glinerThreshold,
+    vertical: opts.vertical,
   };
 
   // 1) store — валидирует профиль (бросит на неизвестном) ДО записи env
-  const stored = buildStoredConfig(opts.profile);
+  const stored = buildStoredConfig(opts.profile, {
+    hideMode: choice.hideMode ?? (choice.enable ? 'surrogate' : 'placeholder'),
+    morph: choice.morph ?? 'auto',
+    nerEngine: resolvedNerEngine(choice),
+    vertical: choice.vertical,
+  });
   io.write(opts.storePath, JSON.stringify(stored, null, 2));
 
   // 2) .env — вставить/заменить управляемый блок

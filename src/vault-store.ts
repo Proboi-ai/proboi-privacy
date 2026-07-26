@@ -29,6 +29,10 @@ export interface VaultEntry {
   token: string;
   type: string;
   raw: string;
+  lemma?: string;
+  morph?: Record<string, string>;
+  surface?: string;
+  surrogateLemma?: string;
 }
 
 export interface VaultStore {
@@ -84,7 +88,9 @@ export function memoryVaultStore(): VaultStore {
   return {
     load: (scope) => rows.filter((r) => r.scope === scope).map((r) => ({ ...r.entry })),
     put: (scope, entry) => {
-      rows.push({ scope, entry: { ...entry } });
+      const i = rows.findIndex((r) => r.scope === scope && r.entry.token === entry.token);
+      if (i >= 0) rows[i] = { scope, entry: { ...entry } };
+      else rows.push({ scope, entry: { ...entry } });
     },
   };
 }
@@ -114,13 +120,17 @@ export function sqliteVaultStore(opts: { db: VaultDb; key: Uint8Array }): VaultS
     load: (scope) => {
       const out: VaultEntry[] = [];
       for (const row of selectScope.all(scope) as Array<{ token: string; type: string; blob: Uint8Array }>) {
-        const raw = openValue(kek, scope, row.token, row.blob);
-        out.push({ token: row.token, type: row.type, raw });
+        const plain = openValue(kek, scope, row.token, row.blob);
+        out.push(
+          plain.startsWith("\0v2")
+            ? JSON.parse(plain.slice(3)) as VaultEntry
+            : { token: row.token, type: row.type, raw: plain },
+        );
       }
       return out;
     },
     put: (scope, entry) => {
-      const blob = sealValue(kek, scope, entry.token, entry.raw);
+      const blob = sealValue(kek, scope, entry.token, `\0v2${JSON.stringify(entry)}`);
       insert.run(scope, entry.token, entry.type, blob);
     },
   };

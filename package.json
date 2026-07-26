@@ -6,9 +6,14 @@
   "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
     "typecheck": "bun x tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "validate": "bun scripts/validate.ts"
   },
   "dependencies": {
+    "@faker-js/faker": "^10.5.0",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "lvovich": "^2.1.0",
     "proj4": "^2.20.9"
   },
   "devDependencies": {

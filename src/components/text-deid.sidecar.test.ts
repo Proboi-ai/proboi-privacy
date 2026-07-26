@@ -6,8 +6,8 @@ import { SidecarManager } from "../sidecar";
 import type { ComponentContext, Payload } from "../types";
 
 const MOCK = join(import.meta.dir, "..", "__fixtures__", "mock-sidecar.ts");
-const ctx = (audit: unknown[] = []): ComponentContext => ({
-  cfg: {},
+const ctx = (audit: unknown[] = [], cfg: Record<string, unknown> = {}): ComponentContext => ({
+  cfg,
   now: () => 1_700_000_000_000,
   audit: (ev) => audit.push(ev),
 });
@@ -43,5 +43,57 @@ describe("privacy/text-deid: upgrade сайдкаром (опциональны�
     const out = await comp.beforeEgress!(p, ctx(events));
     expect(out.text).toContain("[PER_01]"); // TS-дефолт поймал ФИО
     expect((events[0] as any).detail.sidecar).toBe(false);
+  });
+
+  it("GLiNER берёт отраслевой тип из vertical config", async () => {
+    sm = new SidecarManager(["bun", MOCK]);
+    await sm.start();
+    const comp = createTextDeidComponent(new TokenVault(), { sidecar: sm });
+    const p: Payload = { kind: "text", text: "участок Тайга", meta: {} };
+    const out = await comp.beforeEgress!(
+      p,
+      ctx([], { nerEngine: "gliner", vertical: "geo", entities: ["FIELD"] }),
+    );
+    expect(out.text).toBe("участок [FIELD_01]");
+  });
+
+  it("GEO-гибрид: NER закрывает название, правила — лицензию и скважину", async () => {
+    sm = new SidecarManager(["bun", MOCK]);
+    await sm.start();
+    const comp = createTextDeidComponent(new TokenVault(), { sidecar: sm });
+    const p: Payload = {
+      kind: "text",
+      text: "Лицензия ЯКУ 14917 НР; скважина №Р-812; участок Тайга",
+      meta: {},
+    };
+    const out = await comp.beforeEgress!(
+      p,
+      ctx([], { nerEngine: "gliner", vertical: "geo" }),
+    );
+    expect(out.text).toContain("[LICENSE_SUBSOIL_01]");
+    expect(out.text).toContain("[WELL_01]");
+    expect(out.text).toContain("[FIELD_01]");
+    expect(out.text).not.toMatch(/ЯКУ|Р-812|Тайга/u);
+  });
+
+  it("падение GLiNER запускает fallback, но fail-closed блокирует egress", async () => {
+    sm = new SidecarManager(["bun", MOCK]);
+    await sm.start();
+    const comp = createTextDeidComponent(new TokenVault(), { sidecar: sm });
+    const p: Payload = { kind: "text", text: "GLINER_FAIL Иванов И.И.", meta: {} };
+    await expect(comp.beforeEgress!(
+      p,
+      ctx([], { nerEngine: "gliner", entities: ["PER"] }),
+    )).rejects.toThrow("egress заблокирован");
+  });
+
+  it("настроенная GLiNER при down-сайдкаре блокирует сырой текст", async () => {
+    sm = new SidecarManager(["bun", MOCK]);
+    const comp = createTextDeidComponent(new TokenVault(), { sidecar: sm });
+    const p: Payload = { kind: "text", text: "неизвестный участок", meta: {} };
+    await expect(comp.beforeEgress!(
+      p,
+      ctx([], { nerEngine: "gliner", vertical: "geo" }),
+    )).rejects.toThrow("передача заблокирована");
   });
 });

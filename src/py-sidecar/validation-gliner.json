@@ -1,0 +1,83 @@
+{
+  "fixture": "/Users/evgeniy/projects/proboi-privacy/src/py-sidecar/fixtures/geo_report_sample.jsonl",
+  "engine": "gliner",
+  "rows_evaluated": 20,
+  "types_evaluated": [
+    "PER",
+    "ORG"
+  ],
+  "stats": {
+    "OVERALL": {
+      "exact": {
+        "tp": 5,
+        "fp": 17,
+        "fn": 14,
+        "precision": 0.2273,
+        "recall": 0.2632,
+        "f1": 0.2439
+      },
+      "overlap": {
+        "tp": 7,
+        "fp": 15,
+        "fn": 12,
+        "precision": 0.3182,
+        "recall": 0.3684,
+        "f1": 0.3415
+      }
+    },
+    "PER": {
+      "exact": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 12,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "overlap": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 12,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    },
+    "ORG": {
+      "exact": {
+        "tp": 5,
+        "fp": 11,
+        "fn": 2,
+        "precision": 0.3125,
+        "recall": 0.7143,
+        "f1": 0.4348
+      },
+      "overlap": {
+        "tp": 7,
+        "fp": 9,
+        "fn": 0,
+        "precision": 0.4375,
+        "recall": 1.0,
+        "f1": 0.6087
+      }
+    },
+    "ADDR": {
+      "exact": {
+        "tp": 0,
+        "fp": 5,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "overlap": {
+        "tp": 0,
+        "fp": 5,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    }
+  }
+}

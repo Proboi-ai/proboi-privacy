@@ -1,0 +1,63 @@
+{
+  "common": {
+    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
+    "threshold": 0.4,
+    "status": "pilot",
+    "labels": {
+      "PER": "фамилия имя отчество",
+      "ORG": "организация",
+      "ADDR": "почтовый адрес"
+    }
+  },
+  "geo": {
+    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
+    "threshold": 0.4,
+    "status": "research",
+    "labels": {
+      "PER": "фамилия имя отчество",
+      "ORG": "организация",
+      "ADDR": "почтовый адрес",
+      "FIELD": "месторождение или участок недр"
+    }
+  },
+  "legal": {
+    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
+    "threshold": 0.4,
+    "status": "pilot",
+    "labels": {
+      "PER": "фамилия имя отчество",
+      "ORG": "организация",
+      "ADDR": "почтовый адрес"
+    }
+  },
+  "finance": {
+    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
+    "threshold": 0.4,
+    "status": "not-trained-common-fallback",
+    "labels": {
+      "PER": "фамилия имя отчество",
+      "ORG": "организация",
+      "ADDR": "почтовый адрес"
+    }
+  },
+  "medical": {
+    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
+    "threshold": 0.4,
+    "status": "not-trained-common-fallback",
+    "labels": {
+      "PER": "фамилия имя отчество",
+      "ORG": "организация",
+      "ADDR": "почтовый адрес"
+    }
+  },
+  "hr": {
+    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
+    "threshold": 0.4,
+    "status": "not-trained-common-fallback",
+    "labels": {
+      "PER": "фамилия имя отчество",
+      "ORG": "организация",
+      "ADDR": "почтовый адрес"
+    }
+  }
+}

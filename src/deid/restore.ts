@@ -56,6 +56,7 @@ export interface RestoreOpts {
 export interface RestoreVault {
   original(token: string): string | undefined;
   tokens(): string[];
+  surfaces?(): Array<{ token: string; surface: string }>;
 }
 
 /**
@@ -68,8 +69,6 @@ const CANDIDATE_RE = /\[[^[\]]{1,40}\]/gu;
 
 /** Разметка, которую модель дописывает ВНУТРЬ скобок: `[**PER_01**]`, `[`PER_01`]`. */
 const MARKUP_CHARS = /[*`~"'«»“”‘’]/gu;
-/** Разделитель между типом и номером: подчёркивание, любое тире, пробел, перенос строки. */
-const SEPARATORS = /[\s_\-–—‑]+/gu;
 
 /** Разобранный кандидат: `[ per - 01 ]` → `{ type: 'PER', num: 1 }`. */
 interface Parsed {
@@ -83,10 +82,12 @@ interface Parsed {
  * Не разобралось в форму «буквы + цифры» → null (это не наш ярлык).
  */
 function parseCandidate(candidate: string): Parsed | null {
-  const inner = candidate.slice(1, -1).replace(MARKUP_CHARS, "").replace(SEPARATORS, "");
-  const m = /^([A-Za-zА-Яа-яЁё]{2,12})(\d{1,6})$/u.exec(inner);
+  const inner = candidate.slice(1, -1).replace(MARKUP_CHARS, "").trim();
+  const m =
+    /^([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_]{1,30})[\s_\-–—‑]+(\d{1,6})$/u.exec(inner) ??
+    /^([A-Za-zА-Яа-яЁё]{2,12})(\d{1,6})$/u.exec(inner);
   if (!m) return null;
-  return { type: m[1]!.toUpperCase(), num: parseInt(m[2]!, 10) };
+  return { type: m[1]!.replace(/_+$/u, "").toUpperCase(), num: parseInt(m[2]!, 10) };
 }
 
 /** Ключ индекса: тип + номер без ведущих нулей. `[PER_01]` и `[per-1]` дают один ключ. */
@@ -150,7 +151,20 @@ export function restoreText(
   const fuzzy = opts?.fuzzy === true;
   const { byKey, types } = fuzzy ? buildIndex(vault) : { byKey: new Map<string, string>(), types: [] };
 
-  const out = text.replace(CANDIDATE_RE, (candidate) => {
+  let surfaced = text;
+  for (const { token, surface } of (vault.surfaces?.() ?? []).sort(
+    (a, b) => b.surface.length - a.surface.length,
+  )) {
+    const original = vault.original(token);
+    if (!original || !surface) continue;
+    const parts = surfaced.split(surface);
+    if (parts.length > 1) {
+      byTier.morph += parts.length - 1;
+      surfaced = parts.join(original);
+    }
+  }
+
+  const out = surfaced.replace(CANDIDATE_RE, (candidate) => {
     // Уровень 1 — точный. Работает всегда, в том числе при выключенных уровнях 2–3.
     const exact = vault.original(candidate);
     if (exact !== undefined) {

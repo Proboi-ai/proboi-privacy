@@ -27,6 +27,10 @@ describe('renderPrivacyEnv', () => {
     expect(block).toContain('PRIVACY_PROFILE=geo');
     expect(block).toContain('PRIVACY_BACKEND_PORT=7090');
     expect(block).toContain('PRIVACY_BACKEND_HOST=127.0.0.1');
+    expect(block).toContain('PRIVACY_HIDE_MODE=surrogate');
+    expect(block).toContain('PRIVACY_MORPH=auto');
+    expect(block).toContain('PRIVACY_NER_ENGINE=natasha');
+    expect(block).toContain('PRIVACY_VERTICAL=');
   });
   it('disable → PRIVACY_MODULE=off', () => {
     expect(renderPrivacyEnv({ enable: false, profile: 'base' })).toContain('PRIVACY_MODULE=off');
@@ -34,6 +38,34 @@ describe('renderPrivacyEnv', () => {
   it('sidecarCmd прокидывается', () => {
     const b = renderPrivacyEnv({ enable: true, profile: 'geo', sidecarCmd: 'python sc.py' });
     expect(b).toContain('PRIVACY_SIDECAR_CMD=python sc.py');
+  });
+  it('явный GLiNER-вес и порог прокидываются в sidecar env', () => {
+    const b = renderPrivacyEnv({
+      enable: true,
+      profile: 'legal',
+      nerEngine: 'gliner',
+      glinerModel: '/opt/proboi/model',
+      glinerThreshold: 0.25,
+    });
+    expect(b).toContain('PRIVACY_GLINER_MODEL=/opt/proboi/model');
+    expect(b).toContain('PRIVACY_GLINER_THRESHOLD=0.25');
+  });
+  it('локальный GLiNER-вес без явного engine включает гибрид both', () => {
+    const b = renderPrivacyEnv({
+      enable: true,
+      profile: 'geo',
+      glinerModel: '/opt/proboi/model',
+    });
+    expect(b).toContain('PRIVACY_NER_ENGINE=both');
+  });
+  it('профильный models.json без абсолютных model paths включает гибрид both', () => {
+    const b = renderPrivacyEnv({
+      enable: true,
+      profile: 'medical',
+      glinerModelsConfig: 'src/py-sidecar/models.json',
+    });
+    expect(b).toContain('PRIVACY_NER_ENGINE=both');
+    expect(b).toContain('PRIVACY_GLINER_MODELS_CONFIG=src/py-sidecar/models.json');
   });
 });
 
@@ -58,17 +90,21 @@ describe('upsertEnvBlock', () => {
 });
 
 describe('buildStoredConfig', () => {
-  it('geo → включает text-deid с конфигом координат', () => {
+  it('geo → включает полный отраслевой реестр', () => {
     const cfg = buildStoredConfig('geo');
     expect(cfg.activeProfile).toBe('geo');
-    expect(cfg.components['text-deid']).toEqual({ enabled: true, config: { entities: ['COORD', 'PER', 'ORG', 'DATE'] } });
+    expect(cfg.components['text-deid']).toEqual({ enabled: true, config: { vertical: 'geo' } });
     expect(cfg.components['geo-mask']?.enabled).toBe(true);
   });
-  it('legal → geo-mask выключен, есть CASE (№ дел)', () => {
+  it('legal → geo-mask выключен, включён legal vertical', () => {
     const cfg = buildStoredConfig('legal');
     expect(cfg.components['geo-mask']?.enabled).toBe(false);
-    // CASE — реальная сущность detect.ts (бывш. мнимый CASE_NUM, приведён к реализации)
-    expect((cfg.components['text-deid']?.config as { entities: string[] }).entities).toContain('CASE');
+    expect(cfg.components['text-deid']?.config).toEqual({ vertical: 'legal' });
+  });
+  it('явный vertical заменяет legacy entities единым отраслевым реестром', () => {
+    const cfg = buildStoredConfig('standard', { vertical: 'finance' });
+    expect(cfg.components['text-deid']?.config).toMatchObject({ vertical: 'finance' });
+    expect(cfg.components['text-deid']?.config.entities).toBeUndefined();
   });
   it('неизвестный профиль → бросает', () => {
     expect(() => buildStoredConfig('nope')).toThrow(/Неизвестный профиль/);
@@ -91,8 +127,23 @@ describe('provision', () => {
     expect(io.files['.env']).toContain('PRIVACY_MODULE=on');
     const store = JSON.parse(io.files['secrets/privacy-config.json']);
     expect(store.activeProfile).toBe('geo');
+    expect(store.components['text-deid'].config.hideMode).toBe('surrogate');
     expect(res.enabledComponents).toContain('geo-mask');
     expect(res.summary).toContain('профиль "geo"');
+  });
+
+  it('GLiNER provision сохраняет both и в env, и в store', () => {
+    const io = memIo();
+    provision({
+      enable: true,
+      profile: 'legal',
+      glinerModel: '/opt/proboi/model',
+      envPath: '.env',
+      storePath: 's.json',
+      io,
+    });
+    expect(io.files['.env']).toContain('PRIVACY_NER_ENGINE=both');
+    expect(JSON.parse(io.files['s.json']).components['text-deid'].config.nerEngine).toBe('both');
   });
 
   it('disable всё равно раскладывает store (включение потом — один флаг)', () => {

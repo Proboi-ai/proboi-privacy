@@ -21,6 +21,7 @@ describe('PrivacyBackend', () => {
     registry.register(stub('audit-logger'));
     registry.register(stub('envelope'));
     registry.register(stub('geo-mask'));
+    registry.register(stub('text-deid'));
 
     store = new ConfigStore(memoryStore());
     sidecar = new SidecarManager();
@@ -92,6 +93,14 @@ describe('PrivacyBackend', () => {
     expect(body.ok).toBe(true);
     // geo-mask зарегистрирован → не в skipped
     expect(body.skipped).not.toContain('geo-mask');
+    expect(store.get().components['text-deid']?.config).toEqual({ vertical: 'geo' });
+  });
+
+  it('POST /profiles/medical/apply → переключает vertical в runtime config', async () => {
+    const res = await fetch(`${baseUrl}/profiles/medical/apply`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(store.get().activeProfile).toBe('medical');
+    expect(store.get().components['text-deid']?.config).toEqual({ vertical: 'medical' });
   });
 
   it('POST /profiles/unknown/apply → 404', async () => {

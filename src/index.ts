@@ -59,6 +59,7 @@ export { PrivacyBackend } from './backend';
 export { SidecarManager } from './sidecar';
 export { ConfigStore, memoryStore, fileStore } from './config-store';
 export { BUILTIN_PROFILES, BASE, GEO, LEGAL, applyProfile } from './profiles';
+export { deidentifyXlsx, reidentifyXlsx, assertXlsxContainsNone } from './xlsx';
 export type {
   Tier,
   Runtime,
@@ -71,3 +72,19 @@ export type {
   StoredConfig,
 } from './types';
 export { PrivacyBlockedError } from './types';
+export {
+  ENTITY_REGISTRY,
+  ENTITY_TYPES,
+  entitiesForVertical,
+  isVertical,
+} from './deid/entities';
+export type { EntityDef, EntityType, Vertical } from './deid/entities';
+export {
+  isValidAccount,
+  isValidBik,
+  isValidCard,
+  isValidInn,
+  isValidOgrn,
+  isValidOgrnip,
+  isValidSnils,
+} from './deid/checksums';

@@ -6,9 +6,8 @@
  * поверх этого слоя. Честное ограничение: часть PII может протечь →
  * человек-в-цикле, не слепое доверие.
  *
- * Типы: PER (ФИО) · ORG (организация) · DATE (дата) · CASE (№ дела/документа) ·
- * COORD (геокоординаты — делегируется в специализированный geo/coords) ·
- * PASSPORT (серия+номер паспорта РФ) · INN (ИНН, 10/12 цифр) · PHONE (телефон РФ).
+ * Типы определены в entities.ts; regex/checksum-слой здесь, NER и координаты подключаются
+ * через существующие sidecar/geo-компоненты.
  * confidence: 'high' — специфичный паттерн/словарь; 'medium' — эвристика по форме.
  *
  * Паспорт/ИНН/телефон: keyword-gated правила (см. PASSPORT/INN ниже) + PHONE по формату
@@ -18,14 +17,24 @@
  */
 
 import { detectCoords } from "../geo/coords";
+import {
+  isValidAccount,
+  isValidBik,
+  isValidCard,
+  isValidOgrn,
+  isValidOgrnip,
+  isValidSnils,
+} from "./checksums";
+import type { EntityType } from "./entities";
 
-export type EntityType = "PER" | "ORG" | "DATE" | "CASE" | "COORD" | "PASSPORT" | "INN" | "PHONE";
+export type { EntityType } from "./entities";
 
 export interface DetectedEntity {
   type: EntityType;
   raw: string;
   index: number;
   confidence: "high" | "medium";
+  source?: "rule" | "ner";
 }
 
 // Орг-формы РФ (высокая уверенность при наличии кавычек-названия рядом)
@@ -54,19 +63,35 @@ interface Rule {
   type: EntityType;
   re: RegExp;
   confidence: "high" | "medium";
+  validate?: (raw: string, text: string) => boolean;
 }
 
 const RULES: Rule[] = [
   // ORG: форма + «Название» (кавычки-ёлочки или прямые)
   {
     type: "ORG",
-    re: new RegExp(`(?:${ORG_FORMS.join("|")})\\s+[«"][^»"]+[»"]`, "gu"),
+    re: new RegExp(
+      `(?:${ORG_FORMS.join("|")})\\s+[«"][^»"]+[»"](?:\\s+им\\.\\s+[А-ЯЁ]\\.[А-ЯЁ]\\.\\s+[А-ЯЁ][а-яё-]+)?`,
+      "gu",
+    ),
     confidence: "high",
   },
-  // CASE: арбитражное дело АXX-12345/2020
-  { type: "CASE", re: /[А-Я]\d{1,2}-\d{2,6}\/\d{4}/gu, confidence: "high" },
-  // CASE: № <буквенно-цифровой с минимум одной цифрой>
-  { type: "CASE", re: /№\s?[А-Яа-яA-Za-z0-9][А-Яа-яA-Za-z0-9\-\/]*\d[А-Яа-яA-Za-z0-9\-\/]*/gu, confidence: "high" },
+  {
+    type: "ORG",
+    re: /(?:обществ[ао]|компани[яи]|организаци[яи]|учреждени[ея])\s+[«"][^»"]+[»"]/giu,
+    confidence: "high",
+  },
+  // CASE: арбитражное дело А40-12345/2020, 40-12345/2020 или 2а–123/2020.
+  // Не используем универсальное «№…»: оно ошибочно забирает номера договоров.
+  { type: "CASE", re: /(?<![А-ЯЁа-яёA-Za-z0-9])А?\d{1,2}[а-я]?[-–]\d{2,6}\/\d{4}(?!\d)/giu, confidence: "high" },
+  // Короткий внутренний формат только после явного слова «дело».
+  { type: "CASE", re: /(?<=дело\s)№\s*\d{1,3}[-–]\d{1,6}(?![\d/])/giu, confidence: "high" },
+  // Форматы карточек Верховного Суда: 18-КГ26-41-К4, 5-АД26-12-К2, АКПИ26-262.
+  {
+    type: "CASE",
+    re: /(?<![А-ЯЁа-яёA-Za-z0-9])(?:\d{1,2}[-–][А-ЯЁ]{2}\d{2}[-–]\d{1,4}[-–][А-ЯЁ]\d|АКПИ\d{2}[-–]\d{1,6})(?![А-ЯЁа-яёA-Za-z0-9])/gu,
+    confidence: "high",
+  },
   // PASSPORT: серия (4 цифры) + номер (6 цифр) РЯДОМ со словом «паспорт» — keyword-gated,
   // чтобы не путать со случайной 10-значной последовательностью. Матч целиком
   // (включая слово) уходит в токен — как и CASE-правило выше с «№».
@@ -75,12 +100,175 @@ const RULES: Rule[] = [
     re: /паспорт[а-яё]*[:\s]+(?:[а-яё]+[:\s]+){0,3}(?:сери[яи]\s*)?№?\s*\d{2}\s?\d{2}\s*(?:№\s?|номер\s?)?\d{6}\b/giu,
     confidence: "high",
   },
-  // ИНН: 10 цифр (юрлицо) или 12 цифр (физлицо/ИП), keyword-gated словом «ИНН».
-  { type: "INN", re: /ИНН[:\s]*\d{12}\b|ИНН[:\s]*\d{10}\b/giu, confidence: "high" },
+  // ИНН: явный keyword gate достаточен. Даже ошибочно набранный ИНН остаётся приватным
+  // значением и маскируется; checksum-валидатор используется отдельно и при генерации суррогатов.
+  {
+    type: "INN",
+    re: /ИНН[:\s]*(?:\d{12}|\d{10})\b/giu,
+    confidence: "high",
+  },
   // PHONE: РФ-формат +7/8 + 10 цифр в типовой группировке (пробел/тире/скобки опционально).
   {
     type: "PHONE",
     re: /(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}\b/gu,
+    confidence: "high",
+  },
+  {
+    type: "EMAIL",
+    re: /(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu,
+    confidence: "high",
+  },
+  {
+    type: "ADDR",
+    re: /(?<!\d)\d{6}\s+[А-ЯЁ][А-ЯЁ -]+,\s*УЛ\.\s*[А-ЯЁ .-]+,\s*\d+(?:\/\d+)?(?:,\s*[А-ЯЁ0-9-]+)?/gu,
+    confidence: "high",
+  },
+  {
+    type: "ADDR",
+    re: /г\.\s*[А-ЯЁ][а-яё]+,\s*ул\.\s*[А-ЯЁ][а-яё]+,\s*д\.\s*\d+(?:\/\d+)?/gu,
+    confidence: "high",
+  },
+  {
+    type: "URL",
+    re: /\bhttps?:\/\/[^\s<>"'«»]+/giu,
+    confidence: "high",
+  },
+  {
+    type: "IP",
+    re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu,
+    confidence: "high",
+    validate: (raw) => raw.split(".").every((part) => Number(part) <= 255),
+  },
+  {
+    type: "LICENSE_SUBSOIL",
+    re: /(?<![А-ЯЁа-яё])[А-ЯЁ]{3}\s?\d{5,6}\s?[А-ЯЁ]{2}(?![А-ЯЁа-яё])/gu,
+    confidence: "medium",
+  },
+  {
+    type: "WELL",
+    re: /(?:[а-яё]+\s+)?(?:скважин[а-яё]*|скв\.?|буров(?:ая|ой|ую))\s*[:.]?\s*№?\s*[А-Яа-яA-Za-z0-9][А-Яа-яA-Za-z0-9./-]*/giu,
+    confidence: "medium",
+  },
+  {
+    type: "FIELD",
+    re: /(?:уч(?:асток)?\.?|участк[а-яё]*|площадь)(?:\s+недр)?\s*[«"][^»"]+[»"]/giu,
+    confidence: "medium",
+  },
+  {
+    type: "FIELD",
+    re: /(?:[«"])?р\.\s*[А-ЯЁ][А-ЯЁа-яё-]+(?:,\s*приток\s+реки\s+[А-ЯЁ][А-ЯЁа-яё-]+)?(?:[»"])?/gu,
+    confidence: "medium",
+  },
+  {
+    type: "FIELD",
+    re: /объект\s*(?:—|–|-|:)?\s*(?:м-е\s+)?[А-ЯЁ][А-ЯЁа-яё.-]+(?=\s*(?:[;/]|$))/gu,
+    confidence: "medium",
+  },
+  {
+    type: "FIELD",
+    re: /(?<![А-ЯЁа-яё])[А-ЯЁ][А-ЯЁа-яё-]+(?:\s+(?:част[а-яё]*|участк[а-яё]+|[А-ЯЁ][А-ЯЁа-яё-]+)){0,3}\s+(?:участк[а-яё]+|месторождени[а-яё]*)(?![А-ЯЁа-яё])/gu,
+    confidence: "medium",
+  },
+  {
+    type: "CADASTRE",
+    re: /\b\d{2}:\d{2}:(?:\d{6,7}|\d{4}:\d{3}):\d{1,7}\b/gu,
+    confidence: "medium",
+  },
+  {
+    type: "OGRNIP",
+    re: /ОГРНИП[:\s]*\d{15}\b/giu,
+    confidence: "high",
+    validate: (raw) => isValidOgrnip(raw.replace(/\D/g, "")),
+  },
+  {
+    type: "OGRN",
+    re: /ОГРН(?!ИП)[:\s]*\d{13}\b/giu,
+    confidence: "high",
+    validate: (raw) => isValidOgrn(raw.replace(/\D/g, "")),
+  },
+  { type: "KPP", re: /КПП[:\s]*\d{9}\b/giu, confidence: "medium" },
+  {
+    type: "CONTRACT_NO",
+    re: /(?:договор[а-яё]*|контракт[а-яё]*|соглашени[а-яё]*|дог-р)(?:\s+(?!от\b)[а-яё-]+){0,3}(?:\s+от\s+\d{1,2}\.\d{1,2}\.\d{4})?\s*№\s*[А-Яа-яA-Za-z0-9][А-Яа-яA-Za-z0-9./-]*/giu,
+    confidence: "high",
+  },
+  {
+    type: "NOTARY_REG",
+    re: /(?<!\d)\d{2}\/\d{3,6}-н\/\d{2}-\d{4}-\d{1,3}-\d{1,3}(?!\d)/giu,
+    confidence: "high",
+  },
+  {
+    type: "NOTARY_REG",
+    re: /реестр(?:овый|ового)?\.?\s*(?:номер|№)\s*[А-Яа-яA-Za-z0-9][А-Яа-яA-Za-z0-9./-]*/giu,
+    confidence: "medium",
+  },
+  {
+    type: "BIK",
+    re: /БИК[:\s]*\d{9}\b/giu,
+    confidence: "high",
+    validate: (raw) => isValidBik(raw.replace(/\D/g, "")),
+  },
+  {
+    type: "ACCOUNT",
+    re: /(?:расч[её]тн(?:ый|ого)|корреспондентск(?:ий|ого)|лицев(?:ой|ого))\s+сч[её]т[:\s№]*\d{20}\b/giu,
+    confidence: "high",
+    // ponytail: один БИК на документ; связывать по ближайшему, если появятся multi-bank документы.
+    validate: (raw, text) => {
+      const account = raw.replace(/\D/g, "").slice(-20);
+      const bik = /БИК[:\s]*(\d{9})\b/iu.exec(text)?.[1];
+      return bik !== undefined && isValidAccount(account, bik);
+    },
+  },
+  {
+    type: "CARD",
+    re: /(?:карт[аы]|PAN)[:\s№]*(?:\d[ -]?){12,18}\d\b/giu,
+    confidence: "high",
+    validate: (raw) => isValidCard(raw.replace(/\D/g, "")),
+  },
+  {
+    type: "AMOUNT",
+    re: /\b\d{1,3}(?:[ \u00a0]\d{3})*(?:[.,]\d{2})?\s*(?:₽|руб(?:\.|лей|ля)?)(?![А-Яа-яЁё])/giu,
+    confidence: "high",
+  },
+  {
+    type: "SNILS",
+    re: /СНИЛС[:\s]*(?:\d{3}[ -]?){2}\d{3}[ -]?\d{2}\b/giu,
+    confidence: "high",
+    validate: (raw) => isValidSnils(raw.replace(/[^\d -]/g, "")),
+  },
+  {
+    type: "POLICY_OMS",
+    re: /(?:полис(?:а)?\s+ОМС|ОМС)[:\s№]*\d{16}\b/giu,
+    confidence: "medium",
+  },
+  {
+    type: "MRN",
+    re: /(?:медицинск[а-яё]+\s+карт[а-яё]*|медкарт[а-яё]*)[:\s№]*[А-Яа-яA-Za-z0-9][А-Яа-яA-Za-z0-9/-]*/giu,
+    confidence: "medium",
+  },
+  {
+    type: "ICD",
+    re: /(?:МКБ(?:-10)?|диагноз)[:\s]*[A-ZА-Я]\d{2}(?:\.\d{1,2})?\b/giu,
+    confidence: "high",
+  },
+  {
+    type: "PERSONNEL_NO",
+    re: /табельн[а-яё]*\s+(?:номер|№)[:\s]*[А-Яа-яA-Za-z0-9][А-Яа-яA-Za-z0-9/-]*/giu,
+    confidence: "medium",
+  },
+  {
+    type: "LABOUR_BOOK",
+    re: /трудов[а-яё]*\s+книжк[а-яё]*[:\s]*(?:серия\s*)?[А-ЯA-Z0-9-]+\s*№?\s*\d{6,7}\b/giu,
+    confidence: "medium",
+  },
+  {
+    type: "DL",
+    re: /водительск[а-яё]*\s+удостоверени[а-яё]*[:\s№]*(?:\d{2}\s?\d{2}\s?\d{6})\b/giu,
+    confidence: "medium",
+  },
+  {
+    type: "PLATE",
+    re: /(?<![А-ЯЁA-Z0-9])[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3}(?![А-ЯЁA-Z0-9])/gu,
     confidence: "high",
   },
   // DATE: 12.03.2020 / 12/03/20
@@ -116,27 +304,27 @@ const RULES: Rule[] = [
 ];
 
 const CONF_RANK = { high: 0, medium: 1 } as const;
+const SOURCE_RANK = { rule: 0, ner: 1 } as const;
 
 /**
- * Снимает перекрытия: жадно берёт непересекающиеся спаны, предпочитая ранний,
- * затем более длинный, затем более уверенный. Годится и для мержа TS+сайдкар.
+ * Снимает перекрытия: точные правила приоритетнее NER, затем уверенность и длина.
+ * Это не даёт широкому вероятностному спану затереть точный номер/идентификатор.
  */
 export function resolveOverlaps(entities: DetectedEntity[]): DetectedEntity[] {
   const sorted = [...entities].sort(
     (a, b) =>
-      a.index - b.index ||
+      SOURCE_RANK[a.source ?? "ner"] - SOURCE_RANK[b.source ?? "ner"] ||
+      CONF_RANK[a.confidence] - CONF_RANK[b.confidence] ||
       b.raw.length - a.raw.length ||
-      CONF_RANK[a.confidence] - CONF_RANK[b.confidence],
+      a.index - b.index,
   );
   const out: DetectedEntity[] = [];
-  let end = -1;
   for (const e of sorted) {
-    if (e.index >= end) {
-      out.push(e);
-      end = e.index + e.raw.length;
-    }
+    const end = e.index + e.raw.length;
+    if (out.some((kept) => e.index < kept.index + kept.raw.length && kept.index < end)) continue;
+    out.push(e);
   }
-  return out;
+  return out.sort((a, b) => a.index - b.index);
 }
 
 /**
@@ -148,7 +336,8 @@ export function detectEntities(text: string, types: EntityType[]): DetectedEntit
   const found: DetectedEntity[] = [];
   for (const rule of active) {
     for (const m of text.matchAll(rule.re)) {
-      found.push({ type: rule.type, raw: m[0], index: m.index!, confidence: rule.confidence });
+      if (rule.validate && !rule.validate(m[0], text)) continue;
+      found.push({ type: rule.type, raw: m[0], index: m.index!, confidence: rule.confidence, source: "rule" });
     }
   }
   // COORD не regex-правило detect.ts — делегируем в специализированный geo/coords
@@ -156,7 +345,7 @@ export function detectEntities(text: string, types: EntityType[]): DetectedEntit
   // PII (решение владельца) → токенизируем ДО облака наравне с ФИО/ORG.
   if (types.includes("COORD")) {
     for (const c of detectCoords(text)) {
-      found.push({ type: "COORD", raw: c.raw, index: c.index, confidence: "high" });
+      found.push({ type: "COORD", raw: c.raw, index: c.index, confidence: "high", source: "rule" });
     }
   }
   return resolveOverlaps(found);

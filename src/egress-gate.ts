@@ -17,6 +17,8 @@ import { join } from "node:path";
 import { TokenVault } from "./vault";
 import { tokenizeText, detokenizeText } from "./components/text-deid";
 import type { EntityType } from "./deid/detect";
+import { createLocalMorphAdapter, NOOP_MORPH } from "./deid/morph";
+import { createPlaceholderOperator, createSurrogateOperator, type HideMode } from "./deid/operators";
 import { restoreText, type RestoreResult } from "./deid/restore";
 import { PrivacyBlockedError } from "./types";
 import type { VaultStore } from "./vault-store";
@@ -32,6 +34,8 @@ export interface EgressReceipt {
   restored?: number;
   /** Только у квитанции возврата: сколько ярлыков привязать не удалось (§7.4 спеки). */
   orphans?: number;
+  hideMode?: HideMode;
+  replacements?: number;
 }
 
 export interface EgressResult {
@@ -140,14 +144,16 @@ const vaultsByUser = new Map<string, TokenVault>();
 // (байт-в-байт прежнее поведение, все существующие тесты целы). Включается либо явно
 // (configurePersistentVault — из bootstrap), либо лениво из env PRIVACY_VAULT_DB (см. ниже).
 let persistentStore: VaultStore | null = null;
+let persistentSeedKey: Uint8Array | undefined;
 let vaultStoreInit: Promise<void> | null = null;
 
 /**
  * Явно задать/сбросить персистентный стор (bootstrap раннера, где уже есть KEK). Пере-создаёт
  * per-user vaults на следующем обращении (сброс кэша), чтобы новые читали из стора.
  */
-export function configurePersistentVault(store: VaultStore | null): void {
+export function configurePersistentVault(store: VaultStore | null, seedKey?: Uint8Array): void {
   persistentStore = store;
+  persistentSeedKey = seedKey;
   vaultStoreInit = Promise.resolve(); // env-инициализация больше не нужна
   vaultsByUser.clear();
 }
@@ -184,6 +190,7 @@ async function initPersistentVaultFromEnv(): Promise<void> {
     const kek = await keys.getKek();
     const raw = new Uint8Array(await crypto.subtle.exportKey("raw", kek));
     persistentStore = sqliteVaultStore({ db: new Database(dbPath), key: raw });
+    persistentSeedKey = raw;
     console.warn(
       `[privacy] персистентный token-vault ВКЛ: ${dbPath} — на диске только шифртекст (AES-256-GCM), ` +
         `KEK из ${keyfile ? "keyfile" : "DPAPI/keyDir"}. Карта токенов переживёт рестарт.`,
@@ -199,7 +206,11 @@ async function initPersistentVaultFromEnv(): Promise<void> {
 function getUserVault(userId: string): TokenVault {
   let vault = vaultsByUser.get(userId);
   if (!vault) {
-    vault = new TokenVault(persistentStore ? { store: persistentStore, scope: userId } : undefined);
+    vault = new TokenVault(
+      persistentStore
+        ? { store: persistentStore, scope: userId, seedKey: persistentSeedKey }
+        : { scope: userId },
+    );
     vaultsByUser.set(userId, vault);
     if (vaultsByUser.size > MAX_TRACKED_USERS) {
       const oldest = vaultsByUser.keys().next().value;
@@ -213,10 +224,18 @@ function getUserVault(userId: string): TokenVault {
 export function __resetVaultsForTests(): void {
   vaultsByUser.clear();
   persistentStore = null;
+  persistentSeedKey = undefined;
   vaultStoreInit = null;
 }
 
-function tokenizeForProfile(text: string, vault: TokenVault): { text: string; count: number; lowConfidence: number; profile: string } {
+function tokenizeForProfile(text: string, vault: TokenVault): {
+  text: string;
+  count: number;
+  lowConfidence: number;
+  profile: string;
+  hideMode: HideMode;
+  replacements: number;
+} {
   const profile = activeProfile();
   const types = PROFILE_ENTITY_TYPES[profile] ?? [];
   if (types.length === 0) {
@@ -237,17 +256,41 @@ function tokenizeForProfile(text: string, vault: TokenVault): { text: string; co
       );
     }
   }
-  const { text: deid, count, lowConfidence } = tokenizeText(text, vault, types);
-  return { text: deid, count, lowConfidence, profile };
+  const hideMode: HideMode =
+    process.env.PRIVACY_HIDE_MODE === "surrogate" ? "surrogate" : "placeholder";
+  const morphMode = process.env.PRIVACY_MORPH ?? "auto";
+  if (hideMode === "surrogate" && morphMode === "off") {
+    throw new PrivacyBlockedError("text-deid", "PRIVACY_HIDE_MODE=surrogate требует PRIVACY_MORPH");
+  }
+  const morph = morphMode === "off" ? NOOP_MORPH : createLocalMorphAdapter();
+  const operator =
+    hideMode === "surrogate" ? createSurrogateOperator({ morph }) : createPlaceholderOperator();
+  const { text: deid, count, lowConfidence, replacements } = tokenizeText(
+    text,
+    vault,
+    types,
+    { operator, morph },
+  );
+  return { text: deid, count, lowConfidence, profile, hideMode, replacements };
 }
 
-function makeReceipt(component: string, deid: string, count: number, lowConfidence: number, profile: string): EgressReceipt {
+function makeReceipt(
+  component: string,
+  deid: string,
+  count: number,
+  lowConfidence: number,
+  profile: string,
+  hideMode: HideMode,
+  replacements: number,
+): EgressReceipt {
   const receipt: EgressReceipt = {
     ts: Date.now(),
     component,
     entities: count,
     lowConfidence,
     profile,
+    hideMode,
+    replacements,
     hashPostRedaction: createHash("sha256").update(deid).digest("hex"),
   };
   persistReceipt(receipt);
@@ -299,8 +342,17 @@ function makeRestorers(vault: TokenVault, profile: string): Pick<EgressResult, "
 export async function deidentifyOutbound(text: string, userId?: string): Promise<EgressResult> {
   if (userId) await ensurePersistentVaultFromEnv();
   const vault = userId ? getUserVault(userId) : new TokenVault();
-  const { text: deid, count, lowConfidence, profile } = tokenizeForProfile(text, vault);
-  const receipt = makeReceipt("text-deid", deid, count, lowConfidence, profile);
+  const { text: deid, count, lowConfidence, profile, hideMode, replacements } =
+    tokenizeForProfile(text, vault);
+  const receipt = makeReceipt(
+    "text-deid",
+    deid,
+    count,
+    lowConfidence,
+    profile,
+    hideMode,
+    replacements,
+  );
 
   return { text: deid, receipt, ...makeRestorers(vault, profile) };
 }
@@ -317,8 +369,17 @@ export async function deidentifyOutbound(text: string, userId?: string): Promise
 export async function deidentifyToolOutput(text: string, userId?: string): Promise<EgressResult> {
   if (userId) await ensurePersistentVaultFromEnv();
   const vault = userId ? getUserVault(userId) : new TokenVault();
-  const { text: deid, count, lowConfidence, profile } = tokenizeForProfile(text, vault);
-  const receipt = makeReceipt("text-deid-tool", deid, count, lowConfidence, profile);
+  const { text: deid, count, lowConfidence, profile, hideMode, replacements } =
+    tokenizeForProfile(text, vault);
+  const receipt = makeReceipt(
+    "text-deid-tool",
+    deid,
+    count,
+    lowConfidence,
+    profile,
+    hideMode,
+    replacements,
+  );
 
   return { text: deid, receipt, ...makeRestorers(vault, profile) };
 }

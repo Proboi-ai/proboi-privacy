@@ -57,8 +57,23 @@ describe('bootstrapPrivacy — деплой-opt-in', () => {
     const reg = h.module!.registry;
     expect(reg.isEnabled('text-deid')).toBe(true);
     expect(reg.isEnabled('geo-mask')).toBe(true);
-    // store засеян конфигом профиля (entities для координат) — configFor его прочтёт
-    expect(store.get().components['text-deid']?.config).toEqual({ entities: ['COORD', 'PER', 'ORG', 'DATE'] });
+    // store засеян vertical-профилем — text-deid развернёт полный отраслевой реестр
+    expect(store.get().components['text-deid']?.config).toEqual({ vertical: 'geo' });
+    await h.stop();
+  });
+  it('PRIVACY_VERTICAL заменяет legacy entities в свежем store', async () => {
+    const h = await bootstrapPrivacy({
+      env: {
+        PRIVACY_MODULE: 'on',
+        PRIVACY_PROFILE: 'standard',
+        PRIVACY_VERTICAL: 'finance',
+      },
+      startBackend: false,
+    });
+    expect(h.module?.store.get().components['text-deid']?.config).toMatchObject({
+      vertical: 'finance',
+    });
+    expect(h.module?.store.get().components['text-deid']?.config.entities).toBeUndefined();
     await h.stop();
   });
 

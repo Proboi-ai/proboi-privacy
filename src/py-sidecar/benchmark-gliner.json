@@ -1,0 +1,6 @@
+{
+  "model": ".models/gliner-pii-base-v1.0",
+  "seconds_per_3000_chars_median": 1.0661805840209126,
+  "ram_peak_mb": 2173.3125,
+  "entities": 1
+}

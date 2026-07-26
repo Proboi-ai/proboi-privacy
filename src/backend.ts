@@ -79,6 +79,13 @@ export class PrivacyBackend {
       const profile = BUILTIN_PROFILES.find(p => p.id === id);
       if (!profile) return json({ error: 'Profile not found' }, 404);
       const skipped = applyProfile(this.registry, profile);
+      for (const [componentId, entry] of Object.entries(profile.components)) {
+        if (!this.registry.has(componentId)) continue;
+        this.store.setComponent(componentId, {
+          enabled: entry.enabled,
+          config: { ...(entry.config ?? {}) },
+        });
+      }
       this.store.setActiveProfile(id);
       return json({ ok: true, skipped });
     }
@@ -114,7 +121,7 @@ export class PrivacyBackend {
     // GET /sidecar/health
     if (method === 'GET' && path === '/sidecar/health') {
       const status = await this.sidecar.health();
-      return json({ status });
+      return json({ status, ...this.sidecar.healthDetails() });
     }
 
     // GET /audit

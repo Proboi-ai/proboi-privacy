@@ -12,7 +12,8 @@
  * шифрованной колонке — поэтому детерминированное шифрование не нужно.
  */
 
-import type { VaultStore } from "./vault-store";
+import { createHmac, randomBytes } from "node:crypto";
+import type { VaultEntry, VaultStore } from "./vault-store";
 
 /** Разбирает номер из токена [TYPE_NN] (для восстановления счётчиков при гидрации). */
 function tokenNumber(token: string): number | null {
@@ -21,23 +22,27 @@ function tokenNumber(token: string): number | null {
 }
 
 export class TokenVault {
-  private byToken = new Map<string, string>(); // token → оригинал
+  private byToken = new Map<string, VaultEntry>(); // token → локальная запись
   private byKey = new Map<string, string>(); // keyOf(type, raw) → token
   private counters = new Map<string, number>(); // type → последний номер
   private readonly store?: VaultStore;
   private readonly scope?: string;
+  private readonly scopeSalt: Uint8Array;
 
   /**
    * opts.store + opts.scope → durable-режим: при создании подтягиваем сохранённые токены из стора
    * (расшифровка), при tokenFor новые пишем в стор. Без opts — прежнее поведение (чистый in-memory,
    * байт-в-байт), все существующие `new TokenVault()` целы.
    */
-  constructor(opts?: { store?: VaultStore; scope?: string }) {
+  constructor(opts?: { store?: VaultStore; scope?: string; seedKey?: Uint8Array }) {
     this.store = opts?.store;
     this.scope = opts?.scope;
+    this.scopeSalt = opts?.seedKey
+      ? createHmac("sha256", opts.seedKey).update(opts.scope ?? "default").digest()
+      : randomBytes(32);
     if (this.store && this.scope !== undefined) {
       for (const e of this.store.load(this.scope)) {
-        this.byToken.set(e.token, e.raw);
+        this.byToken.set(e.token, e);
         this.byKey.set(this.keyOf(e.type, e.raw), e.token);
         const n = tokenNumber(e.token);
         if (n !== null && n > (this.counters.get(e.type) ?? 0)) this.counters.set(e.type, n);
@@ -51,7 +56,7 @@ export class TokenVault {
    * рестарта промахнётся и наплодит дубль-токены.
    */
   private keyOf(type: string, raw: string): string {
-    return `${type} ${raw}`;
+    return `${type}\0${raw}`;
   }
 
   /** Токен для (тип, оригинал). Формат: [TYPE_NN]. Повтор → тот же токен. */
@@ -62,18 +67,48 @@ export class TokenVault {
     const n = (this.counters.get(type) ?? 0) + 1;
     this.counters.set(type, n);
     const token = `[${type}_${String(n).padStart(2, "0")}]`;
-    this.byToken.set(token, raw);
+    const entry = { token, type, raw };
+    this.byToken.set(token, entry);
     this.byKey.set(key, token);
     // durable: новый токен переживёт рестарт (значение шифруется внутри стора).
     if (this.store && this.scope !== undefined) {
-      this.store.put(this.scope, { token, type, raw });
+      this.store.put(this.scope, entry);
     }
     return token;
   }
 
   /** Оригинал по токену (ре-идентификация, только локально). */
   original(token: string): string | undefined {
+    return this.byToken.get(token)?.raw;
+  }
+
+  entry(token: string): Readonly<VaultEntry> | undefined {
     return this.byToken.get(token);
+  }
+
+  setSurface(
+    token: string,
+    value: Pick<VaultEntry, "surface" | "lemma" | "morph" | "surrogateLemma">,
+  ): void {
+    const current = this.byToken.get(token);
+    if (!current) throw new Error(`TokenVault: неизвестный токен ${token}`);
+    const next = { ...current, ...value };
+    this.byToken.set(token, next);
+    if (this.store && this.scope !== undefined) this.store.put(this.scope, next);
+  }
+
+  surfaces(): Array<{ token: string; surface: string }> {
+    return [...this.byToken.values()]
+      .filter((e): e is VaultEntry & { surface: string } => Boolean(e.surface))
+      .map(({ token, surface }) => ({ token, surface }));
+  }
+
+  /** Детерминированный seed внутри tenant scope; исходное значение наружу не выводится. */
+  seedFor(type: string, value: string): number {
+    return createHmac("sha256", this.scopeSalt)
+      .update(`${type}\0${value}`)
+      .digest()
+      .readUInt32BE(0);
   }
 
   /**

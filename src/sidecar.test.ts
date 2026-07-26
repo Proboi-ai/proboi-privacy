@@ -29,6 +29,12 @@ describe("SidecarManager: живой мок-сайдкар (JSON-newline RPC)", 
     sm = new SidecarManager(["bun", MOCK]);
     await sm.start();
     expect(sm.status()).toBe("healthy");
+    expect(sm.healthDetails()).toMatchObject({
+      active_profile: "common",
+      model: "mock-model",
+      threshold: 0.5,
+      model_status: "unloaded",
+    });
   });
 
   it("deid RPC: params доходят, структурный result возвращается", async () => {
@@ -39,6 +45,24 @@ describe("SidecarManager: живой мок-сайдкар (JSON-newline RPC)", 
     expect(ents).toHaveLength(1);
     expect(ents[0]!.type).toBe("PER");
     expect(ents[0]!.raw).toBe(src.slice(0, 5)); // мок вернул первые 5 символов
+  });
+
+  it("morph RPC: разбор формы и согласование с числом", async () => {
+    sm = new SidecarManager(["bun", MOCK]);
+    await sm.start();
+    expect(await sm.morphAnalyze("Иванову", "PER")).toEqual({
+      lemma: "иванов",
+      form: { case: "dat", gender: "masc", number: "sing" },
+    });
+    expect(await sm.agreeWithNumber(2, "скважина")).toBe("скважины");
+    expect(await sm.agreeWithNumber(5, "скважина")).toBe("скважин");
+  });
+
+  it("GLiNER RPC принимает вертикаль и возвращает отраслевой тип", async () => {
+    sm = new SidecarManager(["bun", MOCK]);
+    await sm.start();
+    const entities = await sm.deidGliner("участок Тайга", "geo");
+    expect(entities[0]).toMatchObject({ type: "FIELD", raw: "Тайга" });
   });
 
   it("после stop() → down, новые запросы отклоняются", async () => {

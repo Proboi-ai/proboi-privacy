@@ -1,4 +1,4 @@
-# Python privacy-сайдкар — опциональный upgrade
+# Python privacy-сайдкар — переключаемые локальные NER-модели
 
 Высокорекольный русский NER (Natasha ~95% F1) поверх TS-дефолта (`../deid/detect.ts`).
 Ставится **только по желанию** клиента — без него работает TS-путь.
@@ -15,7 +15,24 @@ Natasha даёт PER/ORG (даты/№дел закрывает TS-regex на р
 
 ## Запуск (раннер поднимает сам через Bun.spawn)
 ```
-PRIVACY_SIDECAR_CMD="python3 src/py-sidecar/natasha_sidecar.py" bun run start
+cp src/py-sidecar/models.example.json src/py-sidecar/models.json
+PRIVACY_NER_ENGINE=both \
+PRIVACY_GLINER_MODELS_CONFIG=src/py-sidecar/models.json \
+PRIVACY_SIDECAR_CMD=".venv-privacy/bin/python src/py-sidecar/natasha_sidecar.py" \
+bun run start
+```
+
+Пути в `models.json` разрешаются относительно самого файла, поэтому в git не
+нужны абсолютные машинные пути. Каждый профиль задаёт `model`, `labels`,
+`threshold` и честный `status`. GLiNER грузится только при первом запросе.
+Одновременно в памяти находится не более одного тяжёлого веса; общий path
+между профилями переиспользуется.
+
+Обратная совместимость:
+
+```bash
+PRIVACY_GLINER_MODEL=artifacts/local-model \
+PRIVACY_GLINER_THRESHOLD=0.4
 ```
 
 ## Установка
@@ -25,10 +42,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 При первом `deid` Natasha тянет модели (navec/slovnet, ~50–100МБ) — доставка вместе
 с бинарём раннера, подпись бинаря + whitelist Defender.
 
-## Fail-closed
-natasha не установлена / модели не загрузились → `health` отвечает `ok:false`,
-`SidecarManager` помечает сайдкар `down`, `text-deid` остаётся на TS-дефолте.
-Проверено локально (health без natasha → `{"ok":false,"error":"No module named 'natasha'"}`).
+## Health и fail-closed
+
+Health показывает `active_profile`, `model`, `threshold`, `model_status` и
+`release_status`, не загружая тяжёлый вес заранее. Если профиль настроен на
+GLiNER, но модель отсутствует или не загрузилась, Natasha и TypeScript rules
+могут выполнить локальный fallback, однако внешний egress блокируется:
+техническая ошибка не разрешает отправку сырого текста.
 
 ## Статус верификации
 - ✅ Протокол + graceful-degrade — смоук пройден локально.

@@ -57,4 +57,49 @@ describe("privacy/text-deid: токенизация PII", () => {
     expect(out.text).toContain("Иванов И.П."); // ФИО не тронуто
     expect(out.text).toContain("[DATE_01]");
   });
+
+  it("cfg.vertical используется только когда явного entities нет", async () => {
+    const comp = createTextDeidComponent(new TokenVault());
+    const p: Payload = {
+      kind: "text",
+      text: "СНИЛС 112-233-445 95, карта 4111 1111 1111 1111",
+      meta: {},
+    };
+    const medical = await comp.beforeEgress!(p, ctx({ vertical: "medical" }));
+    expect(medical.text).toContain("[SNILS_01]");
+    expect(medical.text).toContain("4111 1111 1111 1111");
+
+    const explicit = await comp.beforeEgress!(p, ctx({ vertical: "medical", entities: ["CARD"] }));
+    expect(explicit.text).toContain("112-233-445 95");
+    expect(explicit.text).toContain("[CARD_01]");
+  });
+
+  it("surrogate сохраняет падеж, пишет безопасный audit и восстанавливает оригинал", async () => {
+    const events: unknown[] = [];
+    const comp = createTextDeidComponent(new TokenVault());
+    const p: Payload = { kind: "text", text: "Поручено Иванову И.И.", meta: {} };
+    const out = await comp.beforeEgress!(
+      p,
+      ctx({ entities: ["PER"], hideMode: "surrogate", morph: "local" }, events),
+    );
+    expect(out.text).toMatch(/^Поручено [А-ЯЁ][а-яё]+у [А-ЯЁ]\.[А-ЯЁ]\.$/u);
+    expect(out.text).not.toContain("Иванов");
+    expect((events[0] as any).detail).toMatchObject({
+      hideMode: "surrogate",
+      replacements: 1,
+    });
+    expect(JSON.stringify(events)).not.toContain("Иванов");
+    expect((await comp.afterResponse!(out, ctx())).text).toBe(p.text);
+  });
+
+  it("surrogate с выключенной морфологией отклоняется", async () => {
+    const comp = createTextDeidComponent(new TokenVault());
+    const p: Payload = { kind: "text", text: "Иванов И.И.", meta: {} };
+    await expect(
+      comp.beforeEgress!(
+        p,
+        ctx({ entities: ["PER"], hideMode: "surrogate", morph: "off" }),
+      ),
+    ).rejects.toThrow("surrogate требует работающую морфологию");
+  });
 });

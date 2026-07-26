@@ -40,6 +40,7 @@ export class ConfigStore {
   private persistence: Persistence;
   private changeListeners: Array<(c: StoredConfig) => void> = [];
   private hooks?: StoreHooks;
+  private encryptionChain: Promise<void> = Promise.resolve();
 
   constructor(persistence: Persistence, hooks?: StoreHooks) {
     this.persistence = persistence;
@@ -83,9 +84,12 @@ export class ConfigStore {
     // fire-and-forget шифрование блоба (если envelope подключён)
     if (this.hooks?.envelope) {
       const bytes = new TextEncoder().encode(JSON.stringify(this.data));
-      this.hooks.envelope.encryptBytes(bytes)
+      // Сохраняем порядок sync-изменений и async-блобов: AES-GCM вызовы могут
+      // завершиться в обратном порядке, иначе последний encrypted не равен последнему state.
+      this.encryptionChain = this.encryptionChain
+        .then(() => this.hooks!.envelope!.encryptBytes(bytes))
         .then(enc => this.hooks?.onEncrypted?.(enc))
-        .catch(() => {}); // не блокирует sync-путь
+        .catch(() => {}); // не блокирует sync-путь и не ломает последующие записи
     }
     for (const cb of this.changeListeners) cb(this.data);
   }

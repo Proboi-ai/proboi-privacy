@@ -46,6 +46,13 @@ describe("privacy/restore: уровень 1 (точный) и обратная �
     expect(r.restored).toBe(3);
     expect(r.byTier.exact).toBe(3);
   });
+
+  it("тип с подчёркиванием восстанавливается", () => {
+    const v = new TokenVault();
+    const token = v.tokenFor("LICENSE_SUBSOIL", "МСК 12345 ТЭ");
+    const r = restoreText(`Лицензия ${token}`, v, FUZZY);
+    expect(r.text).toBe("Лицензия МСК 12345 ТЭ");
+  });
 });
 
 describe("privacy/restore: таблица искажений (§7.4 — не менее 12)", () => {

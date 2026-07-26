@@ -30,7 +30,7 @@ export const GEO: Profile = {
     'audit-logger': { enabled: true },
     'envelope': { enabled: true },
     'key-store': { enabled: true },
-    'text-deid': { enabled: true, config: { entities: ['COORD', 'PER', 'ORG', 'DATE'] } },
+    'text-deid': { enabled: true, config: { vertical: 'geo' } },
     'scan-redact': { enabled: true },
     'geo-mask': { enabled: true },
   },
@@ -43,9 +43,56 @@ export const LEGAL: Profile = {
     'audit-logger': { enabled: true },
     'envelope': { enabled: true },
     'key-store': { enabled: true },
-    'text-deid': { enabled: true, config: { entities: ['PER', 'ORG', 'DATE', 'CASE'] } },
+    'text-deid': { enabled: true, config: { vertical: 'legal' } },
     'scan-redact': { enabled: true },
     'geo-mask': { enabled: false },
+  },
+};
+
+export const COMMON: Profile = {
+  id: 'common',
+  label: 'Общий профиль',
+  components: {
+    'audit-logger': { enabled: true },
+    'envelope': { enabled: true },
+    'key-store': { enabled: true },
+    'text-deid': { enabled: true, config: { vertical: 'common' } },
+  },
+};
+
+export const FINANCE: Profile = {
+  id: 'finance',
+  label: 'Финансы и бухгалтерия',
+  components: {
+    'audit-logger': { enabled: true },
+    'envelope': { enabled: true },
+    'key-store': { enabled: true },
+    'text-deid': { enabled: true, config: { vertical: 'finance' } },
+    'scan-redact': { enabled: true },
+  },
+};
+
+export const MEDICAL: Profile = {
+  id: 'medical',
+  label: 'Медицинские документы',
+  components: {
+    'audit-logger': { enabled: true },
+    'envelope': { enabled: true },
+    'key-store': { enabled: true },
+    'text-deid': { enabled: true, config: { vertical: 'medical' } },
+    'scan-redact': { enabled: true },
+  },
+};
+
+export const HR: Profile = {
+  id: 'hr',
+  label: 'Кадровые документы',
+  components: {
+    'audit-logger': { enabled: true },
+    'envelope': { enabled: true },
+    'key-store': { enabled: true },
+    'text-deid': { enabled: true, config: { vertical: 'hr' } },
+    'scan-redact': { enabled: true },
   },
 };
 
@@ -74,7 +121,17 @@ export const STRICT: Profile = {
 };
 
 /** Все встроенные профили */
-export const BUILTIN_PROFILES: Profile[] = [BASE, GEO, LEGAL, STANDARD, STRICT];
+export const BUILTIN_PROFILES: Profile[] = [
+  BASE,
+  COMMON,
+  GEO,
+  LEGAL,
+  FINANCE,
+  MEDICAL,
+  HR,
+  STANDARD,
+  STRICT,
+];
 
 /**
  * Применяет профиль к реестру: включает/выключает зарегистрированные компоненты.

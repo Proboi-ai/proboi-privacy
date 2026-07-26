@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'bun:test';
 import { ComponentRegistry } from './registry';
-import { BASE, GEO, LEGAL, STANDARD, STRICT, BUILTIN_PROFILES, applyProfile } from './profiles';
+import {
+  BASE,
+  COMMON,
+  FINANCE,
+  GEO,
+  HR,
+  LEGAL,
+  MEDICAL,
+  STANDARD,
+  STRICT,
+  BUILTIN_PROFILES,
+  applyProfile,
+} from './profiles';
 import type { PrivacyComponent } from './types';
 
 function stub(id: string): PrivacyComponent {
@@ -27,6 +39,7 @@ describe('applyProfile', () => {
     const skipped = applyProfile(r, GEO);
     expect(r.isEnabled('geo-mask')).toBe(true);
     expect(r.isEnabled('text-deid')).toBe(true);
+    expect(GEO.components['text-deid']?.config).toEqual({ vertical: 'geo' });
     // незарегистрированные - в skipped
     expect(skipped).toContain('audit-logger');
   });
@@ -38,6 +51,7 @@ describe('applyProfile', () => {
     r.setEnabled('geo-mask', true); // предварительно включим
     applyProfile(r, LEGAL);
     expect(r.isEnabled('geo-mask')).toBe(false);
+    expect(LEGAL.components['text-deid']?.config).toEqual({ vertical: 'legal' });
   });
 
   it('неизвестные id возвращаются как пропущенные', () => {
@@ -89,9 +103,17 @@ describe('applyProfile', () => {
     });
   });
 
-  it('BUILTIN_PROFILES содержит все 5 профилей (base/geo/legal/standard/strict)', () => {
+  it('BUILTIN_PROFILES содержит переключаемые отраслевые профили', () => {
     expect(BUILTIN_PROFILES.map((p) => p.id).sort()).toEqual(
-      ['base', 'geo', 'legal', 'standard', 'strict'].sort(),
+      ['base', 'common', 'geo', 'legal', 'finance', 'medical', 'hr', 'standard', 'strict'].sort(),
     );
+    for (const [profile, vertical] of [
+      [COMMON, 'common'],
+      [FINANCE, 'finance'],
+      [MEDICAL, 'medical'],
+      [HR, 'hr'],
+    ] as const) {
+      expect(profile.components['text-deid']?.config).toEqual({ vertical });
+    }
   });
 });

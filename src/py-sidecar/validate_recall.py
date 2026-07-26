@@ -63,7 +63,7 @@ class ValidatorError(RuntimeError):
 # --------------------------------------------------------------------------
 
 
-def _load_sidecar_deid():
+def _load_sidecar_deid(engine: str = "natasha", vertical: str = "common"):
     """Imports `_deid` from natasha_sidecar.py in this directory.
 
     Returns the function itself — this script never re-implements NER, it
@@ -85,6 +85,11 @@ def _load_sidecar_deid():
             f"(import of natasha_sidecar.py failed: {e})"
         ) from e
 
+    if engine == "gliner":
+        gliner = getattr(module, "_deid_gliner", None)
+        if gliner is None:
+            raise ValidatorError("natasha_sidecar.py has no `_deid_gliner` function")
+        return lambda text, _types: gliner(text, vertical)
     deid = getattr(module, "_deid", None)
     if deid is None:
         raise ValidatorError("natasha_sidecar.py has no `_deid` function — sidecar API changed?")
@@ -379,6 +384,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument(
+        "--engine",
+        choices=["natasha", "gliner"],
+        default="natasha",
+        help="sidecar NER engine to evaluate",
+    )
+    parser.add_argument(
+        "--vertical",
+        default="common",
+        help="labels vertical for GLiNER",
+    )
+    parser.add_argument(
         "--fixture",
         type=Path,
         default=DEFAULT_FIXTURE,
@@ -406,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     types = [t.strip().upper() for t in args.types.split(",") if t.strip()]
 
     try:
-        deid = _load_sidecar_deid()
+        deid = _load_sidecar_deid(args.engine, args.vertical)
         fixture_rows = _load_fixture(args.fixture)
         stats, details = score(fixture_rows, deid, types)
     except ValidatorError as e:
@@ -423,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "fixture": str(args.fixture),
+        "engine": args.engine,
         "rows_evaluated": len(fixture_rows),
         "types_evaluated": types,
         "stats": {etype: s.as_dict() for etype, s in stats.items()},

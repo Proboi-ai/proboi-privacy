@@ -149,7 +149,17 @@ export async function bootstrapPrivacy(opts: BootstrapOpts = {}): Promise<Privac
     for (const [id, entry] of Object.entries(profile.components)) {
       if (!registry.has(id)) continue; // напр. scan-redact ещё не построен
       registry.setEnabled(id, entry.enabled);
-      store.setComponent(id, { enabled: entry.enabled, config: entry.config ?? {} });
+      const config = { ...(entry.config ?? {}) };
+      if (id === 'text-deid') {
+        if (env.PRIVACY_HIDE_MODE) config.hideMode = env.PRIVACY_HIDE_MODE;
+        if (env.PRIVACY_MORPH) config.morph = env.PRIVACY_MORPH;
+        if (env.PRIVACY_NER_ENGINE) config.nerEngine = env.PRIVACY_NER_ENGINE;
+        if (env.PRIVACY_VERTICAL) {
+          delete config.entities;
+          config.vertical = env.PRIVACY_VERTICAL;
+        }
+      }
+      store.setComponent(id, { enabled: entry.enabled, config });
     }
     store.setActiveProfile(profile.id);
   }
