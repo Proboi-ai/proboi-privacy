@@ -40,6 +40,16 @@ class NatashaEntityFilterTest(unittest.TestCase):
                       "В.А. Корнилаев", "Джумаханов А. В.", "Подъячев\nВ.М."):
             self.assertTrue(_valid_natasha_entity("PER", value), value)
 
+    def test_keeps_full_name(self):
+        for value in ("Ковшов Иван Петрович", "Метелица Анна Сергеевна",
+                      "Петрович Ковшов Иван"):
+            self.assertTrue(_valid_natasha_entity("PER", value), value)
+
+    def test_rejects_capitalised_word_pairs_without_patronymic(self):
+        for value in ("Тегерек- Наблюдательная", "Верхнеключевская Площадь",
+                      "Кристалл Флюорита"):
+            self.assertFalse(_valid_natasha_entity("PER", value), value)
+
     def test_rejects_capitalised_common_words(self):
         for value in ("Камеральная", "Камеральные", "Оруденение", "Сульфиды", "Автор",
                       "Маркшейдерские", "Отчисление", "Минералы-концентраторы",

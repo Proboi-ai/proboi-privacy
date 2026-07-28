@@ -63,16 +63,30 @@ _SURNAME = r"[А-ЯЁ][а-яё]{2,}(?:-[А-ЯЁ][а-яё]+)?"
 _PERSON_WITH_INITIALS = re.compile(
     rf"^(?:{_SURNAME}\s*,?\s*{_INITIALS}|{_INITIALS}\s*{_SURNAME})$"
 )
+# Полное ФИО — каноническая форма персональных данных, её тоже берём. Якорь —
+# отчество: без него «Булун- Визуальная» и прочие пары слов с заглавной прошли бы.
+_PERSON_FULL_NAME = re.compile(
+    r"^[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:ович|евич|ьич|ич|овна|евна|ична|инична)$"
+    r"|^[А-ЯЁ][а-яё]+(?:ович|евич|ьич|ич|овна|евна|ична|инична)\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+$"
+)
 _LEGAL_FORM = re.compile(r"\b(ООО|ОАО|ЗАО|ПАО|АО|ГПП|ГУП|ФГУП|ФГБУ|НИИ|АНО|НПО|НПЦ|ФКУ|МУП)\b")
 _ABBREVIATION = re.compile(r"^[А-ЯЁ]{4,}$")
 # Служебные поля Word и коды сертификатов, которые Natasha принимает за организацию.
 _LAYOUT_ARTIFACTS = {"REF", "PAGEREF", "TOC", "MERGEFORMAT", "РОСС", "НТС", "RU", "OGTR"}
 
 
+def _known_russian_word(value):
+    """Обычное слово словаря или всё-таки аббревиатура? «НЕДРА» — слово, «СВКНИИ» — нет."""
+    try:
+        return any(parse.is_known for parse in _morph().parse(value.lower()))
+    except Exception:  # noqa: BLE001 — морфология недоступна, решает остальная логика
+        return False
+
+
 def _valid_natasha_entity(entity_type, raw):
     value = re.sub(r"\s+", " ", raw.replace("\n", " ")).strip()
     if entity_type == "PER":
-        return bool(_PERSON_WITH_INITIALS.match(value))
+        return bool(_PERSON_WITH_INITIALS.match(value) or _PERSON_FULL_NAME.match(value))
     if entity_type != "ORG":
         return True
     value = value.strip(" «»\"'()")
@@ -81,7 +95,7 @@ def _valid_natasha_entity(entity_type, raw):
         return False
     if _LEGAL_FORM.search(value):
         return True
-    return bool(_ABBREVIATION.match(words[0]))
+    return bool(_ABBREVIATION.match(words[0])) and not _known_russian_word(words[0])
 
 
 def _deid(text, types):
