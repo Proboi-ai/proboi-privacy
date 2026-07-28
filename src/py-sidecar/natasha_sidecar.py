@@ -51,6 +51,38 @@ def _load_ner():
 # Natasha-тип → наш EntityType
 _TYPE_MAP = {"PER": "PER", "ORG": "ORG"}
 
+# Natasha обучена на новостях и на отраслевом отчёте зовёт человеком любое слово с
+# заглавной в начале предложения («Камеральная», «Оруденение», «Автор»), а
+# организацией — служебные поля вёрстки («PAGEREF», «REF») и номер лицензии. На
+# ручном эталоне это давало точность 0.80 и роняло точность связки с 0.96 до 0.79.
+# Поэтому берём у неё только то, что она умеет лучше модели: подпись «Фамилия И.О.»
+# и юрлицо с организационно-правовой формой. Голые фамилии оставлены модели —
+# у Natasha они как раз и оказывались ложными.
+_INITIALS = r"(?:[А-ЯЁ]\.\s?){1,3}[А-ЯЁ]?(?![а-яё])"
+_SURNAME = r"[А-ЯЁ][а-яё]{2,}(?:-[А-ЯЁ][а-яё]+)?"
+_PERSON_WITH_INITIALS = re.compile(
+    rf"^(?:{_SURNAME}\s*,?\s*{_INITIALS}|{_INITIALS}\s*{_SURNAME})$"
+)
+_LEGAL_FORM = re.compile(r"\b(ООО|ОАО|ЗАО|ПАО|АО|ГПП|ГУП|ФГУП|ФГБУ|НИИ|АНО|НПО|НПЦ|ФКУ|МУП)\b")
+_ABBREVIATION = re.compile(r"^[А-ЯЁ]{4,}$")
+# Служебные поля Word и коды сертификатов, которые Natasha принимает за организацию.
+_LAYOUT_ARTIFACTS = {"REF", "PAGEREF", "TOC", "MERGEFORMAT", "РОСС", "НТС", "RU", "OGTR"}
+
+
+def _valid_natasha_entity(entity_type, raw):
+    value = re.sub(r"\s+", " ", raw.replace("\n", " ")).strip()
+    if entity_type == "PER":
+        return bool(_PERSON_WITH_INITIALS.match(value))
+    if entity_type != "ORG":
+        return True
+    value = value.strip(" «»\"'()")
+    words = value.split()
+    if not words or any(word in _LAYOUT_ARTIFACTS for word in words):
+        return False
+    if _LEGAL_FORM.search(value):
+        return True
+    return bool(_ABBREVIATION.match(words[0]))
+
 
 def _deid(text, types):
     """Возвращает [{type, raw, index, confidence}] для запрошенных типов."""
@@ -66,6 +98,8 @@ def _deid(text, types):
     for span in doc.spans:
         etype = _TYPE_MAP.get(span.type)
         if etype is None or etype not in wanted:
+            continue
+        if not _valid_natasha_entity(etype, span.text):
             continue
         out.append(
             {
