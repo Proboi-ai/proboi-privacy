@@ -1,7 +1,8 @@
 {
+  "_note": "Вес v19: все gate по ПДн пройдены. На ручном эталоне из настоящих отчётов заказчика (227 предложений, 205 сущностей) точность 97,1% при полноте 96,6%, по ФИО 99,2%; в связке с Natasha точность 98,5% при полноте 98,0% и полноте по ФИО 100%. Доказательства — training/expanded/evidence-v7-pii/, карточка — training/expanded/MODEL_CARD-V19-RU.md. FIELD не персональные данные: advisory-слой профиля geo, egress не блокирует.",
   "common": {
-    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
-    "threshold": 0.4,
+    "model": "../../artifacts/proboi-ner-ru-contextual-v19-table-and-bare-names",
+    "threshold": 0.6,
     "status": "pilot",
     "labels": {
       "PER": "фамилия имя отчество",
@@ -10,19 +11,22 @@
     }
   },
   "geo": {
-    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
-    "threshold": 0.4,
-    "status": "research",
+    "model": "../../artifacts/proboi-ner-ru-contextual-v19-table-and-bare-names",
+    "threshold": 0.6,
+    "status": "pilot",
     "labels": {
       "PER": "фамилия имя отчество",
       "ORG": "организация",
       "ADDR": "почтовый адрес",
       "FIELD": "месторождение или участок недр"
-    }
+    },
+    "advisory_types": [
+      "FIELD"
+    ]
   },
   "legal": {
-    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
-    "threshold": 0.4,
+    "model": "../../artifacts/proboi-ner-ru-contextual-v19-table-and-bare-names",
+    "threshold": 0.6,
     "status": "pilot",
     "labels": {
       "PER": "фамилия имя отчество",
@@ -31,9 +35,9 @@
     }
   },
   "finance": {
-    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
-    "threshold": 0.4,
-    "status": "not-trained-common-fallback",
+    "model": "../../artifacts/proboi-ner-ru-contextual-v19-table-and-bare-names",
+    "threshold": 0.6,
+    "status": "common-fallback",
     "labels": {
       "PER": "фамилия имя отчество",
       "ORG": "организация",
@@ -41,9 +45,9 @@
     }
   },
   "medical": {
-    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
-    "threshold": 0.4,
-    "status": "not-trained-common-fallback",
+    "model": "../../artifacts/proboi-ner-ru-contextual-v19-table-and-bare-names",
+    "threshold": 0.6,
+    "status": "common-fallback",
     "labels": {
       "PER": "фамилия имя отчество",
       "ORG": "организация",
@@ -51,9 +55,9 @@
     }
   },
   "hr": {
-    "model": "../../artifacts/proboi-ner-ru-contextual-v5-source-adapted-sanitized-grouped",
-    "threshold": 0.4,
-    "status": "not-trained-common-fallback",
+    "model": "../../artifacts/proboi-ner-ru-contextual-v19-table-and-bare-names",
+    "threshold": 0.6,
+    "status": "common-fallback",
     "labels": {
       "PER": "фамилия имя отчество",
       "ORG": "организация",
