@@ -60,6 +60,19 @@ export { SidecarManager } from './sidecar';
 export { ConfigStore, memoryStore, fileStore } from './config-store';
 export { BUILTIN_PROFILES, BASE, GEO, LEGAL, applyProfile } from './profiles';
 export { deidentifyXlsx, reidentifyXlsx, assertXlsxContainsNone } from './xlsx';
+export { deidentifyDocx, reidentifyDocx, assertDocxContainsNone } from './docx';
+export type { DocxResult } from './docx';
+export { assertPdfContainsNone, extractPdfText, findPdfPlaceholders } from './pdf';
+export {
+  inflectFullName,
+  inflectSurname,
+  lemmatizeSurname,
+  parseName,
+  surnameForms,
+} from './deid/surname';
+export type { GramCase, Gender, ParsedName } from './deid/surname';
+export { restoreText, restoreSpans, applySpans, describeOrphans } from './deid/restore';
+export type { RestoreResult, RestoreSpan, RestoreTier } from './deid/restore';
 export type {
   Tier,
   Runtime,
