@@ -105,10 +105,17 @@ export function originalFor(
   // склонение исходной формы дало бы мусор, поэтому возвращаем её как есть.
   const nominative = entry.lemma;
   if (nominative === undefined) return canonical;
+
+  // Нужный падеж совпал с падежом канона — отдаём КАНОН, а не лемму. Лемма собрана из
+  // разобранных частей и потому не дословна: «К о в а л ё в  Д. А.» она склеивает через
+  // один пробел, и возврат молча менял бы разметку документа. Дословность здесь важнее
+  // единообразия: подставлять в файл строку, которой в нём не было, нельзя.
+  // Падеж канона неизвестен — значит морфология не разбирала строку и лемма равна ей
+  // дословно, склонять безопасно.
   const gramCase = caseFromCue(cue);
-  return gramCase === "nom"
-    ? nominative
-    : inflectFullName(nominative, gramCase, genderOf(entry.morph));
+  const canonicalCase = entry.morph?.case as GramCase | undefined;
+  if (canonicalCase !== undefined && gramCase === canonicalCase) return canonical;
+  return inflectFullName(nominative, gramCase, genderOf(entry.morph));
 }
 
 /**

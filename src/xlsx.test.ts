@@ -64,3 +64,35 @@ describe("xlsx de-identification", () => {
     expect(xml).not.toContain("Ромашка");
   });
 });
+
+describe("xlsx: ФИО в таблице, каким оно там лежит", () => {
+  // Ячейка — самый частый и самый бедный контекст: рядом нет фразы, по которой можно
+  // опознать человека, зато написание бывает любым. Проверяем, что и капс, и разрядка,
+  // и след OCR закрываются, а `originals()` отдаёт ВСЕ падежные написания —
+  // иначе fail-closed проверка книги пропустила бы косвенную форму.
+  it("капс, разрядка и OCR в ячейках маскируются и возвращаются", async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Исполнители");
+    sheet.getCell("A1").value = "КОВАЛЁВ Д.А.";
+    sheet.getCell("A2").value = "К о в а л ё в  Д. А.";
+    sheet.getCell("A3").value = "Koвaлёв Д.А.";
+    sheet.getCell("B1").value = "геолог";
+    const input = new Uint8Array(await workbook.xlsx.writeBuffer());
+
+    const vault = new TokenVault();
+    const { bytes, replacements } = await deidentifyXlsx(input, vault, {
+      vertical: "legal",
+      types: ["PER"],
+    });
+    expect(replacements).toBe(3);
+
+    const back = await reidentifyXlsx(bytes, vault);
+    const restored = new ExcelJS.Workbook();
+    await restored.xlsx.load(back as unknown as ArrayBuffer);
+    const cells = restored.getWorksheet("Исполнители")!;
+    expect(cells.getCell("A1").value).toBe("КОВАЛЁВ Д.А.");
+    expect(cells.getCell("A2").value).toBe("К о в а л ё в  Д. А.");
+    expect(cells.getCell("A3").value).toBe("Koвaлёв Д.А.");
+    expect(cells.getCell("B1").value).toBe("геолог");
+  });
+});
