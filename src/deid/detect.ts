@@ -26,8 +26,12 @@ import {
   isValidSnils,
 } from "./checksums";
 import type { EntityType } from "./entities";
+import { normalizeForDetection, softenAllCaps, toSourceSpan } from "./normalize";
 
 export type { EntityType } from "./entities";
+
+/** Капсовое слово, ради которого делается второй проход детекции. */
+const ALL_CAPS_WORD = /[А-ЯЁ]{4,}/u;
 
 export interface DetectedEntity {
   type: EntityType;
@@ -443,12 +447,34 @@ export function resolveOverlaps(entities: DetectedEntity[]): DetectedEntity[] {
 export function detectEntities(text: string, types: EntityType[]): DetectedEntity[] {
   const active = RULES.filter((r) => types.includes(r.type));
   const found: DetectedEntity[] = [];
-  for (const rule of active) {
-    for (const m of text.matchAll(rule.re)) {
-      if (rule.validate && !rule.validate(m[0], text, m.index!)) continue;
-      found.push({ type: rule.type, raw: m[0], index: m.index!, confidence: rule.confidence, source: "rule" });
+
+  // Текст из PDF, DOCX и сканов приходит порченым: перенос по слогам, разрядка, латинские
+  // двойники после OCR. Правила пишем на нормальном языке, а нормализация приводит вход к
+  // нему (см. normalize.ts). Найденное возвращаем в координаты ИСХОДНОГО текста, поэтому в
+  // сейф и в документ всегда попадает то, что в нём реально написано.
+  const normalized = normalizeForDetection(text);
+  const collect = (haystack: string): void => {
+    for (const rule of active) {
+      for (const m of haystack.matchAll(rule.re)) {
+        if (rule.validate && !rule.validate(m[0], haystack, m.index!)) continue;
+        const [from, to] = toSourceSpan(normalized, m.index!, m.index! + m[0].length);
+        found.push({
+          type: rule.type,
+          raw: text.slice(from, to),
+          index: from,
+          confidence: rule.confidence,
+          source: "rule",
+        });
+      }
     }
-  }
+  };
+
+  collect(normalized.text);
+  // Подписи и штампы набирают капсом («КОВАЛЁВ Д.А.»), а все правила ФИО требуют
+  // «Заглавная + строчные». Второй проход по смягчённой копии добирает их, не трогая первый:
+  // регистр значим для ORG-форм и адресов в верхнем регистре, поэтому смягчённый текст
+  // не заменяет исходный, а дополняет его. Длина сохраняется, офсеты общие.
+  if (ALL_CAPS_WORD.test(normalized.text)) collect(softenAllCaps(normalized.text));
   // COORD не regex-правило detect.ts — делегируем в специализированный geo/coords
   // (DMS/десятичные градусы/полушария + валидация диапазона lat±90/lon±180). Координата =
   // PII (решение владельца) → токенизируем ДО облака наравне с ФИО/ORG.

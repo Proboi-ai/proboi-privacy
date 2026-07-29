@@ -15,6 +15,7 @@ import type { PrivacyComponent, ComponentContext } from "../types";
 import type { TokenVault } from "../vault";
 import type { SidecarManager } from "../sidecar";
 import { detectEntities, resolveOverlaps, type DetectedEntity, type EntityType } from "../deid/detect";
+import { normalizeForDetection, softenAllCaps, toSourceSpan } from "../deid/normalize";
 import { ENTITY_TYPES, entitiesForVertical, isVertical } from "../deid/entities";
 import { cueBefore, originalFor, surrogateForms } from "../deid/identity";
 import { createLocalMorphAdapter, NOOP_MORPH, type MorphAdapter } from "../deid/morph";
@@ -180,6 +181,18 @@ export function createTextDeidComponent(
 
       // 1) TS-дефолт — всегда (страховочная сетка)
       let ents = detectEntities(p.text, types);
+
+      // Сайдкару отдаём НОРМАЛИЗОВАННЫЙ текст. На сыром выходе конвейера (перенос по слогам,
+      // разрядка, капс подписи, латинские двойники после OCR) модель теряет треть ФИО —
+      // замер: 75.7% против 96.6% после нормализации. Правила приводят текст сами внутри
+      // detectEntities, а сюда его надо занести явно и вернуть спаны в координаты оригинала.
+      const sourceText = p.text;
+      const normalized = normalizeForDetection(sourceText);
+      const textForNer = softenAllCaps(normalized.text);
+      const fromNer = (entity: DetectedEntity): DetectedEntity => {
+        const [from, to] = toSourceSpan(normalized, entity.index, entity.index + entity.raw.length);
+        return { ...entity, index: from, raw: sourceText.slice(from, to), source: "ner" as const };
+      };
       const engine =
         typeof ctx.cfg.nerEngine === "string"
           ? ctx.cfg.nerEngine
@@ -201,9 +214,9 @@ export function createTextDeidComponent(
         if (engine === "gliner" || engine === "both") {
           try {
             const vertical = typeof ctx.cfg.vertical === "string" ? ctx.cfg.vertical : "common";
-            const extra = (await sidecar.deidGliner(p.text, vertical))
+            const extra = (await sidecar.deidGliner(textForNer, vertical))
               .filter((entity) => types.includes(entity.type))
-              .map((entity) => ({ ...entity, source: "ner" as const }));
+              .map(fromNer);
             ents = resolveOverlaps([...ents, ...extra]);
             usedSidecar = true;
             glinerOk = true;
@@ -213,8 +226,7 @@ export function createTextDeidComponent(
         }
         if (want.length && (engine === "natasha" || engine === "both" || !glinerOk)) {
           try {
-            const extra = (await sidecar.deid(p.text, want))
-              .map((entity) => ({ ...entity, source: "ner" as const }));
+            const extra = (await sidecar.deid(textForNer, want)).map(fromNer);
             ents = resolveOverlaps([...ents, ...extra]);
             usedSidecar = true;
           } catch {
