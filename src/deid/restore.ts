@@ -30,6 +30,7 @@
  */
 
 import { levenshteinWithin } from "./levenshtein";
+import { fullNameForms, inflectFullName, type GramCase, type Gender } from "./surname";
 
 export type RestoreTier = "exact" | "loose" | "fuzzy" | "morph";
 
@@ -57,6 +58,8 @@ export interface RestoreVault {
   original(token: string): string | undefined;
   tokens(): string[];
   surfaces?(): Array<{ token: string; surface: string }>;
+  /** Тип и сохранённый род нужны, чтобы искать суррогат ФИО во всех падежах. */
+  entry?(token: string): { type: string; morph?: Record<string, string> } | undefined;
 }
 
 /**
@@ -134,10 +137,154 @@ function resolveTypeFuzzy(candidateType: string, knownTypes: string[]): string |
 }
 
 /**
+ * Уровень 4 — суррогаты во ВСЕХ падежах.
+ *
+ * Модель получает связный текст с вымышленным человеком и свободно его склоняет:
+ * выдали «Петров А.В.» — в ответе «направлено Петрову А.В.», «подписано Петровым А.В.».
+ * Поиск по одной выданной поверхности такие формы не находит, и пользователь получает в
+ * документе ВЫМЫШЛЕННОГО человека вместо настоящего — то есть молчаливую подмену, а не
+ * видимый висящий ярлык. Поэтому для ФИО строим все шесть форм суррогата и подставляем
+ * оригинал, склонённый в тот же падеж.
+ *
+ * Порядок — от длинной формы к короткой: иначе «Петров» съел бы начало «Петровым».
+ */
+function surrogateForms(vault: RestoreVault): Array<{ form: string; replacement: string }> {
+  const out: Array<{ form: string; replacement: string }> = [];
+  const seen = new Set<string>();
+  for (const { token, surface } of vault.surfaces?.() ?? []) {
+    const original = vault.original(token);
+    if (!original || !surface) continue;
+    const entry = vault.entry?.(token);
+    const gender = entry?.morph?.gender === "femn" ? "femn" : entry?.morph?.gender === "masc" ? "masc" : undefined;
+
+    const variants: Array<[GramCase, string]> =
+      entry?.type === "PER" || entry === undefined
+        ? fullNameForms(surface, gender as Gender | undefined)
+        : [["nom", surface]];
+
+    for (const [gramCase, form] of variants) {
+      if (seen.has(form)) continue; // одна и та же форма у двух людей — не угадываем, берём первую
+      seen.add(form);
+      out.push({
+        form,
+        // Оригинал ставим в тот же падеж, в каком модель употребила суррогат. Не вышло —
+        // fail-open внутри inflectFullName вернёт исходную форму: имя верное, падеж прежний.
+        replacement: gramCase === "nom" ? original : inflectFullName(original, gramCase, gender as Gender | undefined),
+      });
+    }
+  }
+  return out.sort((a, b) => b.form.length - a.form.length);
+}
+
+/** Участок текста, на месте которого должен оказаться оригинал. */
+export interface RestoreSpan {
+  start: number;
+  /** Конец, не включая. */
+  end: number;
+  replacement: string;
+  tier: RestoreTier;
+}
+
+/**
+ * Куда и что подставить — БЕЗ применения к строке.
+ *
+ * Отдельно от `restoreText`, потому что в файловых форматах текст не лежит одной строкой:
+ * в DOCX один абзац разложен по десяткам `<w:t>`, и подстановка идёт по координатам
+ * (см. `../docx.ts`). Логика уровней при этом остаётся ровно одна, здесь.
+ */
+export function restoreSpans(
+  text: string,
+  vault: RestoreVault,
+  opts?: RestoreOpts,
+): { spans: RestoreSpan[]; orphans: string[] } {
+  const spans: RestoreSpan[] = [];
+  const orphans: string[] = [];
+  if (!text) return { spans, orphans };
+
+  const fuzzy = opts?.fuzzy === true;
+  const { byKey, types } = fuzzy
+    ? buildIndex(vault)
+    : { byKey: new Map<string, string>(), types: [] };
+
+  const taken: Array<[number, number]> = [];
+  const free = (start: number, end: number): boolean =>
+    !taken.some(([from, to]) => start < to && from < end);
+  const claim = (span: RestoreSpan): void => {
+    taken.push([span.start, span.end]);
+    spans.push(span);
+  };
+
+  // Уровень 4 — суррогаты, включая косвенные падежи. Идут первыми: это точные совпадения
+  // известных поверхностей, а формы отсортированы от длинной к короткой, чтобы «Петров»
+  // не откусил начало у «Петровым».
+  for (const { form, replacement } of surrogateForms(vault)) {
+    let from = text.indexOf(form);
+    while (from >= 0) {
+      const to = from + form.length;
+      if (free(from, to)) claim({ start: from, end: to, replacement, tier: "morph" });
+      from = text.indexOf(form, to);
+    }
+  }
+
+  for (const match of text.matchAll(CANDIDATE_RE)) {
+    const candidate = match[0];
+    const start = match.index!;
+    const end = start + candidate.length;
+    if (!free(start, end)) continue;
+
+    // Уровень 1 — точный. Работает всегда, в том числе при выключенных уровнях 2–3.
+    const exact = vault.original(candidate);
+    if (exact !== undefined) {
+      claim({ start, end, replacement: exact, tier: "exact" });
+      continue;
+    }
+    if (!fuzzy) continue;
+
+    const parsed = parseCandidate(candidate);
+    if (!parsed) continue; // не наша форма (markdown-ссылка и т.п.) — молча мимо
+
+    // Уровень 2 — свободный: регистр, ведущий ноль, тире/пробел/перенос, разметка внутри.
+    const loose = byKey.get(keyOf(parsed.type, parsed.num));
+    const looseOriginal = loose === undefined ? undefined : vault.original(loose);
+    if (looseOriginal !== undefined) {
+      claim({ start, end, replacement: looseOriginal, tier: "loose" });
+      continue;
+    }
+
+    // Уровень 3 — нечёткий: искажено ИМЯ ТИПА, номер обязан совпасть точно.
+    const resolvedType = resolveTypeFuzzy(parsed.type, types);
+    const fuzzyToken =
+      resolvedType === null ? undefined : byKey.get(keyOf(resolvedType, parsed.num));
+    const fuzzyOriginal = fuzzyToken === undefined ? undefined : vault.original(fuzzyToken);
+    if (fuzzyOriginal !== undefined) {
+      claim({ start, end, replacement: fuzzyOriginal, tier: "fuzzy" });
+      continue;
+    }
+
+    // Похоже на ярлык, но привязать не к чему — оставляем как есть и честно считаем.
+    orphans.push(candidate);
+  }
+
+  spans.sort((a, b) => a.start - b.start);
+  return { spans, orphans };
+}
+
+/** Применяет спаны к строке. Спаны обязаны быть отсортированы и не пересекаться. */
+export function applySpans(text: string, spans: readonly RestoreSpan[]): string {
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    out += text.slice(cursor, span.start) + span.replacement;
+    cursor = span.end;
+  }
+  return out + text.slice(cursor);
+}
+
+/**
  * Возвращает оригиналы на место ярлыков.
  *
- * `opts.fuzzy` не задан → работает ТОЛЬКО уровень 1, результат байт-в-байт совпадает
- * с `detokenizeText` (проверяется тестом). Всё новое включается явно.
+ * `opts.fuzzy` не задан → работают уровни 1 и 4, результат байт-в-байт совпадает
+ * с `detokenizeText` (проверяется тестом). Уровни 2–3 включаются явно.
  */
 export function restoreText(
   text: string,
@@ -145,67 +292,13 @@ export function restoreText(
   opts?: RestoreOpts,
 ): RestoreResult {
   const byTier: Record<RestoreTier, number> = { exact: 0, loose: 0, fuzzy: 0, morph: 0 };
-  const orphans: string[] = [];
-  if (!text) return { text, restored: 0, orphans, byTier };
+  if (!text) return { text, restored: 0, orphans: [], byTier };
 
-  const fuzzy = opts?.fuzzy === true;
-  const { byKey, types } = fuzzy ? buildIndex(vault) : { byKey: new Map<string, string>(), types: [] };
-
-  let surfaced = text;
-  for (const { token, surface } of (vault.surfaces?.() ?? []).sort(
-    (a, b) => b.surface.length - a.surface.length,
-  )) {
-    const original = vault.original(token);
-    if (!original || !surface) continue;
-    const parts = surfaced.split(surface);
-    if (parts.length > 1) {
-      byTier.morph += parts.length - 1;
-      surfaced = parts.join(original);
-    }
-  }
-
-  const out = surfaced.replace(CANDIDATE_RE, (candidate) => {
-    // Уровень 1 — точный. Работает всегда, в том числе при выключенных уровнях 2–3.
-    const exact = vault.original(candidate);
-    if (exact !== undefined) {
-      byTier.exact++;
-      return exact;
-    }
-    if (!fuzzy) return candidate;
-
-    const parsed = parseCandidate(candidate);
-    if (!parsed) return candidate; // не наша форма (markdown-ссылка и т.п.) — молча мимо
-
-    // Уровень 2 — свободный: регистр, ведущий ноль, тире/пробел/перенос, разметка внутри.
-    const loose = byKey.get(keyOf(parsed.type, parsed.num));
-    if (loose !== undefined) {
-      const original = vault.original(loose);
-      if (original !== undefined) {
-        byTier.loose++;
-        return original;
-      }
-    }
-
-    // Уровень 3 — нечёткий: искажено ИМЯ ТИПА, номер обязан совпасть точно.
-    const resolvedType = resolveTypeFuzzy(parsed.type, types);
-    if (resolvedType !== null) {
-      const token = byKey.get(keyOf(resolvedType, parsed.num));
-      if (token !== undefined) {
-        const original = vault.original(token);
-        if (original !== undefined) {
-          byTier.fuzzy++;
-          return original;
-        }
-      }
-    }
-
-    // Похоже на ярлык, но привязать не к чему — оставляем как есть и честно считаем.
-    orphans.push(candidate);
-    return candidate;
-  });
+  const { spans, orphans } = restoreSpans(text, vault, opts);
+  for (const span of spans) byTier[span.tier]++;
 
   const restored = byTier.exact + byTier.loose + byTier.fuzzy + byTier.morph;
-  return { text: out, restored, orphans, byTier };
+  return { text: applySpans(text, spans), restored, orphans, byTier };
 }
 
 // ─── Показ невосстановленного пользователю (§7.5) ────────────────────────────

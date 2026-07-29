@@ -263,3 +263,38 @@ describe("privacy/levenshtein: расстояние с порогом", () => {
     expect(levenshteinWithin("ORG", "OGR", 2)).toBe(levenshteinWithin("OGR", "ORG", 2));
   });
 });
+
+describe("privacy/restore: уровень 4 (суррогаты в косвенных падежах)", () => {
+  /** Сейф с выданным суррогатом, как его кладёт tokenizeEntities в surrogate-режиме. */
+  function surrogateVault(original: string, surface: string, gender: "masc" | "femn"): TokenVault {
+    const v = new TokenVault();
+    const token = v.tokenFor("PER", original);
+    v.setSurface(token, { surface, morph: { gender } });
+    return v;
+  }
+
+  it("возвращает оригинал, когда модель просклоняла суррогат", () => {
+    const v = surrogateVault("Иванов И.П.", "Петров А.В.", "masc");
+    const r = restoreText("Задание направлено Петрову А.В. и подписано Петровым А.В.", v, FUZZY);
+    expect(r.text).toBe("Задание направлено Иванову И.П. и подписано Ивановым И.П.");
+    expect(r.byTier.morph).toBe(2);
+  });
+
+  it("именительный падеж работает как раньше", () => {
+    const v = surrogateVault("Иванов И.П.", "Петров А.В.", "masc");
+    expect(restoreText("Отчёт составил Петров А.В.", v, FUZZY).text)
+      .toBe("Отчёт составил Иванов И.П.");
+  });
+
+  it("женскую фамилию на согласный не склоняет ни в суррогате, ни в оригинале", () => {
+    const v = surrogateVault("Ким О.С.", "Нгуен А.П.", "femn");
+    expect(restoreText("Передано Нгуен А.П. для ознакомления", v, FUZZY).text)
+      .toBe("Передано Ким О.С. для ознакомления");
+  });
+
+  it("дефисную фамилию восстанавливает из косвенного падежа", () => {
+    const v = surrogateVault("Тер-Петросян А.Б.", "Гончарук И.С.", "masc");
+    expect(restoreText("Отчёт согласован с Гончаруком И.С.", v, FUZZY).text)
+      .toBe("Отчёт согласован с Тер-Петросяном А.Б.");
+  });
+});
