@@ -16,6 +16,7 @@ import type { TokenVault } from "../vault";
 import type { SidecarManager } from "../sidecar";
 import { detectEntities, resolveOverlaps, type DetectedEntity, type EntityType } from "../deid/detect";
 import { ENTITY_TYPES, entitiesForVertical, isVertical } from "../deid/entities";
+import { cueBefore, originalFor, surrogateForms } from "../deid/identity";
 import { createLocalMorphAdapter, NOOP_MORPH, type MorphAdapter } from "../deid/morph";
 import {
   createPlaceholderOperator,
@@ -33,6 +34,8 @@ const ACCEPTED_TYPES: EntityType[] = [...ENTITY_TYPES];
 // Natasha NER покрывает только PER/ORG — остальные типы остаются на TS-слое.
 const SIDECAR_TYPES: EntityType[] = ["PER", "ORG"];
 const TOKEN_RE = /\[[A-Z][A-Z0-9_]*_\d+\]/g;
+/** Один адаптер на модуль: он без состояния, а создавать его на каждый вызов незачем. */
+const DEFAULT_MORPH: MorphAdapter = createLocalMorphAdapter();
 
 function readTypes(cfg: Record<string, unknown>): EntityType[] {
   const raw = cfg.entities;
@@ -61,35 +64,54 @@ export function tokenizeEntities(
   const operator = opts?.operator ?? createPlaceholderOperator();
   const taken = new Set(vault.surfaces().map(({ surface }) => surface));
   const ordered = [...ents].sort((a, b) => b.index - a.index);
+  // Дефолт — локальная морфология, а не «никакой»: без леммы падежи одного человека
+  // разъезжаются по разным токенам. Явный `morph: "off"` по-прежнему отдаёт NOOP.
+  const morph = opts?.morph ?? DEFAULT_MORPH;
   for (const e of ordered) {
     if (e.confidence !== "high") lowConfidence++;
-    const token = vault.tokenFor(e.type, e.raw);
+    // Морфология нужна ОБОИМ режимам: она даёт ключ личности, по которому все падежи одного
+    // человека сходятся в один токен. Не отработала → ключом остаётся сама строка (как раньше).
+    const analysis = opts?.analyses?.get(`${e.type}\0${e.raw}`) ?? morph?.analyze(e.raw, e.type);
+    const lemma = analysis?.lemma;
+    const token = vault.tokenFor(e.type, e.raw, lemma);
+    // Чем эта форма отличается от канонической — единственное, что позволяет вернуть её
+    // обратно в нужном падеже, когда ярлык один на все падежи.
+    vault.recordUse(token, cueBefore(text, e.index), e.raw);
     let surface = token;
     if (operator.mode === "surrogate") {
-      const existing = vault.entry(token)?.surface;
-      if (existing) {
-        surface = existing;
-      } else {
-        const analysis =
-          opts?.analyses?.get(`${e.type}\0${e.raw}`) ??
-          opts?.morph?.analyze(e.raw, e.type);
-        surface = operator.render(e.type, token, e.raw, {
-          morph: analysis?.form,
-          seed: vault.seedFor(e.type, analysis?.lemma ?? e.raw),
+      // Суррогат сеется от леммы и ХРАНИТСЯ в именительном: один человек — одно вымышленное
+      // имя, а падеж вхождения накладывается сверху. Хранить готовую косвенную форму нельзя —
+      // при общем токене второе упоминание получило бы падеж первого.
+      const stored = vault.entry(token)?.surrogateLemma;
+      const surrogateLemma =
+        stored ??
+        operator.render(e.type, token, e.raw, {
+          morph: analysis?.form ? { gender: analysis.form.gender } : undefined,
+          seed: vault.seedFor(e.type, lemma ?? e.raw),
           scopeSeed: vault.seedFor("DATE", "__scope__"),
           taken,
           sourceText: text,
         });
-        if (surface !== token) {
+      if (surrogateLemma !== token) {
+        surface = morph?.inflect(surrogateLemma, analysis?.form ?? {}, e.type) ?? surrogateLemma;
+        if (stored === undefined) {
           vault.setSurface(token, {
-            surface,
-            lemma: analysis?.lemma,
+            surface: surrogateLemma,
+            surrogateLemma,
+            lemma,
             morph: analysis?.form as Record<string, string> | undefined,
           });
-          taken.add(surface);
+          taken.add(surrogateLemma);
         }
+        replacements++;
       }
-      if (surface !== token) replacements++;
+    } else if (lemma !== undefined && vault.entry(token)?.lemma === undefined) {
+      // Именительный падеж и род — то, от чего возврат склоняет форму, если слова-подсказки
+      // в ответе модели не нашлось. Пишем один раз на личность.
+      vault.setSurface(token, {
+        lemma,
+        morph: analysis?.form as Record<string, string> | undefined,
+      });
     }
     out = out.slice(0, e.index) + surface + out.slice(e.index + e.raw.length);
   }
@@ -106,13 +128,18 @@ export function tokenizeText(
   return tokenizeEntities(text, detectEntities(text, types), vault, opts);
 }
 
-/** Возвращает оригиналы на месте токенов (неизвестный токен оставляем как есть). */
+/**
+ * Возвращает оригиналы на месте токенов (неизвестный токен оставляем как есть).
+ * Форму выбирает `originalFor` по месту ярлыка: один ярлык на человека, но «направлено
+ * [PER_01]» превращается в «направлено Иванову И.П.», а не в именительный падеж.
+ */
 export function detokenizeText(text: string, vault: TokenVault): string {
   let out = text;
-  for (const { token, surface } of vault.surfaces().sort((a, b) => b.surface.length - a.surface.length)) {
-    out = out.split(surface).join(vault.original(token) ?? surface);
+  // Суррогаты ищем во всех падежах: поверхность хранится в именительном, а модель склоняет.
+  for (const { form, replacement } of surrogateForms(vault)) {
+    out = out.split(form).join(replacement);
   }
-  return out.replace(TOKEN_RE, (m) => vault.original(m) ?? m);
+  return out.replace(TOKEN_RE, (m, offset: number) => originalFor(vault, m, out, offset) ?? m);
 }
 
 export function createTextDeidComponent(

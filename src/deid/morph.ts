@@ -9,6 +9,7 @@
 import { cityFrom, cityIn, cityTo } from "lvovich";
 import type { EntityType } from "./entities";
 import {
+  genderFromSurname,
   inferSurnameCase,
   inflectFullName,
   lemmatizeSurname,
@@ -49,17 +50,29 @@ export function createLocalMorphAdapter(): MorphAdapter {
       if (type !== "PER") return { lemma: raw, form: {} };
       const parsed = parseName(raw);
       if (parsed.surnameIndex < 0) return { lemma: raw, form: {} };
-      const gender = parsed.gender ?? "masc";
-      const lemmaSurname = lemmatizeSurname(parsed.surname, gender);
+      let gender = parsed.gender ?? "masc";
+      let lemmaSurname = lemmatizeSurname(parsed.surname, gender);
+      // Второй проход по полу. Пол, взятый с КОСВЕННОЙ формы фамилии, врёт: «Ковалёвой» и
+      // «Ивановой» lvovich считает мужскими — и дальше склоняет их по мужскому образцу
+      // («к Ковалёве»). По лемме тот же вызов отвечает верно, поэтому уточняем и пересчитываем.
+      // Форманты, отчество и имя надёжнее фамилии, их вывод не трогаем.
+      if (parsed.genderFrom === "surname" || parsed.genderFrom === null) {
+        const byLemma = genderFromSurname(lemmaSurname);
+        if (byLemma && byLemma !== gender) {
+          gender = byLemma;
+          lemmaSurname = lemmatizeSurname(parsed.surname, gender);
+        }
+      }
       const parts = [...parsed.parts];
       parts[parsed.surnameIndex] = lemmaSurname;
       return {
-        // Лемма — ключ личности: «Иванову И.И.» и «Иванов И.И.» должны дать ОДИН суррогат,
-        // иначе один человек появляется в документе под двумя вымышленными именами.
+        // Лемма — ключ личности: «Иванову И.И.» и «Иванов И.И.» должны дать ОДИН токен и один
+        // суррогат, иначе один человек появляется в документе дважды — под разными номерами
+        // (модель видит двоих) или под разными вымышленными именами.
         lemma: parts.join(" "),
         form: {
           case: inferSurnameCase(parsed.surname, gender),
-          gender: parsed.gender ?? "masc",
+          gender,
           number: "sing",
         },
       };

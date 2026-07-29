@@ -86,6 +86,13 @@ function genderFromGivenName(word: string): Gender | null {
   return null;
 }
 
+/**
+ * Откуда взялся пол. Нужен вызывающему, чтобы понимать, насколько ответу можно верить:
+ * формант и отчество однозначны, имя почти однозначно, а ФАМИЛИЯ — только в именительном
+ * падеже (см. `genderFromSurname`).
+ */
+export type GenderSource = "marker" | "patronymic" | "given" | "surname" | null;
+
 export interface ParsedName {
   /** Исходная строка без изменений. */
   raw: string;
@@ -96,8 +103,23 @@ export interface ParsedName {
   surname: string;
   /** Пол, если удалось установить; иначе null. */
   gender: Gender | null;
+  /** Чем пол установлен. */
+  genderFrom: GenderSource;
   /** Индексы частей-формантов (оглы/кызы) — их не склоняем и не считаем именем. */
   markerIndexes: number[];
+}
+
+/**
+ * Пол по ИМЕНИТЕЛЬНОЙ форме фамилии.
+ *
+ * Именительной — принципиально: на косвенной lvovich ошибается молча и уверенно
+ * («Ковалёвой» и «Ивановой» он считает мужскими). Дальше эта ошибка не просто портит род
+ * суррогата — она склоняет женскую фамилию по мужскому образцу: «к Ковалёве» вместо
+ * «к Ковалёвой». Поэтому вызывать только на лемме.
+ */
+export function genderFromSurname(nominative: string): Gender | null {
+  const g = getLastnameGender(nominative);
+  return g === "female" ? "femn" : g === "male" ? "masc" : null;
 }
 
 /**
@@ -119,12 +141,16 @@ export function parseName(raw: string): ParsedName {
   const parts = raw.trim().split(/\s+/u).filter(Boolean);
   const markerIndexes: number[] = [];
   let gender: Gender | null = null;
+  let genderFrom: GenderSource = null;
 
   for (const [i, part] of parts.entries()) {
     const marked = PATRONYMIC_MARKERS.find(([re]) => re.test(part.toLowerCase()));
     if (marked) {
       markerIndexes.push(i);
-      gender ??= marked[1];
+      if (!gender) {
+        gender = marked[1];
+        genderFrom = "marker";
+      }
     }
   }
 
@@ -139,14 +165,19 @@ export function parseName(raw: string): ParsedName {
   if (!gender) {
     for (const i of wordIndexes.slice(1)) {
       gender = genderFromPatronymic(parts[i]!);
-      if (gender) break;
+      if (gender) {
+        genderFrom = "patronymic";
+        break;
+      }
     }
   }
-  if (!gender && wordIndexes.length > 1) gender = genderFromGivenName(parts[wordIndexes[1]!]!);
+  if (!gender && wordIndexes.length > 1) {
+    gender = genderFromGivenName(parts[wordIndexes[1]!]!);
+    if (gender) genderFrom = "given";
+  }
   if (!gender && surnameIndex >= 0) {
-    const byLastname = getLastnameGender(parts[surnameIndex]!);
-    if (byLastname === "male") gender = "masc";
-    else if (byLastname === "female") gender = "femn";
+    gender = genderFromSurname(parts[surnameIndex]!);
+    if (gender) genderFrom = "surname";
   }
 
   return {
@@ -155,6 +186,7 @@ export function parseName(raw: string): ParsedName {
     surnameIndex,
     surname: surnameIndex >= 0 ? parts[surnameIndex]! : "",
     gender,
+    genderFrom,
     markerIndexes,
   };
 }
@@ -245,6 +277,9 @@ const LEMMA_CANDIDATES: ReadonlyArray<[RegExp, string]> = [
   [/(?:ому|ему)$/iu, "ий"],
   [/(?:ого|его)$/iu, "ой"],
   [/(?:ым|им|ом|ем|ём)$/iu, ""],
+  // Женское прилагательное («Рутковской» → «Рутковская») — ВЫШЕ общего отсечения -ой→-а:
+  // оно даёт «Рутковска», и round-trip его случайно подтверждает.
+  [/(?<=.)кой$/iu, "кая"],
   [/(?:ой|ей|ою|ею)$/iu, "а"],
   [/(?:у|ю|е|и|ы|а|я)$/iu, ""],
   [/(?:у|е|и|ы)$/iu, "а"],
@@ -252,6 +287,19 @@ const LEMMA_CANDIDATES: ReadonlyArray<[RegExp, string]> = [
   // Мягкий знак восстанавливаем ТОЛЬКО после согласной («Гоголя» → «Гоголь»). После гласной
   // это именительный на -ия/-оя («Данелия», «Гамсахурдия»), и отсечение его бы испортило.
   [/(?<=[бвгджзклмнпрстфхцчшщ])[яю]$/iu, "ь"],
+  // ПРИЛАГАТЕЛЬНЫЕ ФАМИЛИИ на -ский/-цкий в творительном и предложном: «Миневским»,
+  // «Миневском», плюс женский винительный «Рутковскую». Класс частый, а до этого он вообще
+  // не сводился к именительному, и падежи одного человека расходились по разным токенам.
+  //
+  // ПОСЛЕДНИМИ — намеренно. Кандидаты проверяются round-trip'ом по порядку, и первый
+  // подошедший выигрывает; поставленные раньше, эти отсечения перехватывали обычные -ов/-ев
+  // («Ивановым» → «Ивановой» вместо «Иванов»), потому что склонение случайно сходилось.
+  //
+  // Только -к-, а не любое -ым/-им: правило на голое окончание ломает короткие фамилии
+  // («Ким» → «Кий»). Лукбехайнд требует хотя бы одну букву перед формантом по той же причине.
+  [/(?<=.)ким$/iu, "кий"],
+  [/(?<=.)ком$/iu, "кий"],
+  [/(?<=.)кую$/iu, "кая"],
 ];
 
 /**

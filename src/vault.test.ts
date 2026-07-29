@@ -23,6 +23,44 @@ describe("TokenVault: in-memory (без стора — прежнее повед
     expect(v.original(a)).toBe("Иванов И.И.");
     expect(v.size()).toBe(2);
   });
+
+  test("ключ личности сводит падежи одного человека в ОДИН токен", () => {
+    const v = new TokenVault();
+    const a = v.tokenFor("PER", "Иванов И.П.", "Иванов И.П.");
+    const b = v.tokenFor("PER", "Иванову И.П.", "Иванов И.П.");
+    const c = v.tokenFor("PER", "Ивановым И.П.", "Иванов И.П.");
+    expect([b, c]).toEqual([a, a]);
+    expect(v.size()).toBe(1);
+    // канон — форма первого вхождения; остальные доступны через подсказки
+    expect(v.original(a)).toBe("Иванов И.П.");
+  });
+
+  test("без ключа личности поведение прежнее: форма = отдельный токен", () => {
+    const v = new TokenVault();
+    expect(v.tokenFor("PER", "Иванов И.П.")).toBe("[PER_01]");
+    expect(v.tokenFor("PER", "Иванову И.П.")).toBe("[PER_02]");
+  });
+
+  test("подсказки: первое наблюдение выигрывает, чужое слово ничего не даёт", () => {
+    const v = new TokenVault();
+    const t = v.tokenFor("PER", "Иванов И.П.", "Иванов И.П.");
+    v.recordUse(t, "направлено", "Иванову И.П.");
+    v.recordUse(t, "направлено", "Ивановская И.П."); // повтор не перезаписывает
+    v.recordUse(t, "", "мимо"); // пустая подсказка не пишется
+    expect(v.useFor(t, "направлено")).toBe("Иванову И.П.");
+    expect(v.useFor(t, "с")).toBeUndefined();
+  });
+
+  test("originals() отдаёт ВСЕ написания — иначе fail-closed проверка пропустит падежи", () => {
+    const v = new TokenVault();
+    const t = v.tokenFor("PER", "Иванов И.П.", "Иванов И.П.");
+    v.setSurface(t, { lemma: "Иванов И.П." });
+    v.recordUse(t, "направлено", "Иванову И.П.");
+    v.recordUse(t, "с", "Ивановым И.П.");
+    expect(new Set(v.originals())).toEqual(
+      new Set(["Иванов И.П.", "Иванову И.П.", "Ивановым И.П."]),
+    );
+  });
 });
 
 describe("TokenVault: durable через memoryVaultStore", () => {
@@ -66,6 +104,35 @@ describe("TokenVault: durable через memoryVaultStore", () => {
       surface: "Смирнов А.А.",
       morph: { case: "nom", gender: "masc" },
     });
+  });
+
+  test("личность и подсказки переживают рестарт: дедуп по лемме, форма по слову", () => {
+    const store = memoryVaultStore();
+    const v1 = new TokenVault({ store, scope: "user-1" });
+    const token = v1.tokenFor("PER", "Иванов И.П.", "Иванов И.П.");
+    v1.recordUse(token, "направлено", "Иванову И.П.");
+
+    const v2 = new TokenVault({ store, scope: "user-1" });
+    expect(v2.useFor(token, "направлено")).toBe("Иванову И.П.");
+    // после гидрации ключом остаётся ЛИЧНОСТЬ, а не сырая строка: иначе новая падежная
+    // форма того же человека завела бы второй токен
+    expect(v2.tokenFor("PER", "Ивановым И.П.", "Иванов И.П.")).toBe(token);
+    expect(v2.size()).toBe(1);
+  });
+
+  test("записи, сделанные до появления ключа личности, читаются как раньше", () => {
+    const store = memoryVaultStore();
+    // строка старой схемы: identity/uses отсутствуют
+    store.put("user-1", { token: "[PER_01]", type: "PER", raw: "Иванов И.И." });
+
+    const v = new TokenVault({ store, scope: "user-1" });
+    expect(v.original("[PER_01]")).toBe("Иванов И.И.");
+    expect(v.tokenFor("PER", "Иванов И.И.")).toBe("[PER_01]"); // дедуп по сырой строке цел
+    expect(v.useFor("[PER_01]", "направлено")).toBeUndefined();
+    // и запись можно дополнить на месте, без миграции
+    v.recordUse("[PER_01]", "направлено", "Иванову И.И.");
+    expect(new TokenVault({ store, scope: "user-1" }).useFor("[PER_01]", "направлено"))
+      .toBe("Иванову И.И.");
   });
 });
 

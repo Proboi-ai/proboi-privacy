@@ -1,6 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { createTextDeidComponent, tokenizeText, detokenizeText } from "./text-deid";
 import { TokenVault } from "../vault";
+import { createLocalMorphAdapter } from "../deid/morph";
+import { createSurrogateOperator } from "../deid/operators";
 import type { ComponentContext, Payload } from "../types";
 
 function ctx(cfg: Record<string, unknown> = {}, audit: unknown[] = []): ComponentContext {
@@ -90,6 +92,66 @@ describe("privacy/text-deid: токенизация PII", () => {
     });
     expect(JSON.stringify(events)).not.toContain("Иванов");
     expect((await comp.afterResponse!(out, ctx())).text).toBe(p.text);
+  });
+
+  // Сейф нумеровал ФОРМУ: «Иванов И.П.», «Иванову И.П.» и «Ивановым И.П.» давали три токена,
+  // и для модели это были три разных человека.
+  it("один человек в трёх падежах — один ярлык, и возврат байт-в-байт", () => {
+    const v = new TokenVault();
+    const src =
+      "Отчёт составил Иванов И.П. Задание направлено Иванову И.П. Согласовано с Ивановым И.П.";
+    const out = tokenizeText(src, v, ["PER"]);
+
+    expect(v.size()).toBe(1);
+    expect(out.text).toBe(
+      "Отчёт составил [PER_01] Задание направлено [PER_01] Согласовано с [PER_01]",
+    );
+    expect(out.text).not.toContain("Иванов");
+    expect(detokenizeText(out.text, v)).toBe(src);
+  });
+
+  it("возврат ставит падеж по месту ярлыка, а не по канону", () => {
+    const v = new TokenVault();
+    tokenizeText("Задание направлено Иванову И.П. Согласовано с Ивановым И.П.", v, ["PER"]);
+    // слово-подсказка встречалось при обезличивании → форма точная (сама она кончается точкой)
+    expect(detokenizeText("Работа направлено [PER_01]", v)).toBe("Работа направлено Иванову И.П.");
+    // модель перефразировала: падеж по однозначному предлогу
+    expect(detokenizeText("Вопрос к [PER_01] снят.", v)).toBe("Вопрос к Иванову И.П. снят.");
+    expect(detokenizeText("Ответ от [PER_01]", v)).toBe("Ответ от Иванова И.П.");
+    // подсказок нет — именительный, а не косвенный канон
+    expect(detokenizeText("[PER_01] подписал акт.", v)).toBe("Иванов И.П. подписал акт.");
+  });
+
+  it("перестановка предложений моделью падежи не ломает", () => {
+    const v = new TokenVault();
+    tokenizeText("Составил Иванов И.П. Направлено Иванову И.П. Принято Ивановым И.П.", v, ["PER"]);
+    expect(detokenizeText("Принято [PER_01] Составил [PER_01] Направлено [PER_01]", v))
+      .toBe("Принято Ивановым И.П. Составил Иванов И.П. Направлено Иванову И.П.");
+  });
+
+  it("женское ФИО не склоняется по мужскому образцу", () => {
+    const v = new TokenVault();
+    const src = "Акт подписала Ковалёва М.С. Копия вручена Ковалёвой М.С.";
+    const out = tokenizeText(src, v, ["PER"]);
+    expect(v.size()).toBe(1);
+    expect(detokenizeText(out.text, v)).toBe(src);
+    expect(detokenizeText("Обратиться к [PER_01] лично.", v)).toBe("Обратиться к Ковалёвой М.С. лично.");
+  });
+
+  it("surrogate: один человек в разных падежах — одно вымышленное имя, падеж свой", () => {
+    const v = new TokenVault();
+    const morph = createLocalMorphAdapter();
+    const src = "Составил Иванов И.П. Направлено Иванову И.П.";
+    const out = tokenizeText(src, v, ["PER"], {
+      operator: createSurrogateOperator({ morph }),
+      morph,
+    });
+    expect(v.size()).toBe(1);
+    expect(out.text).not.toContain("Иванов");
+    // одна и та же вымышленная фамилия в двух падежах: именительный и дательный на -у
+    const m = /^Составил ([А-ЯЁ][а-яё]+) ([А-ЯЁ]\.[А-ЯЁ]\.) Направлено \1у \2$/u.exec(out.text);
+    expect(m).not.toBeNull();
+    expect(detokenizeText(out.text, v)).toBe(src);
   });
 
   it("surrogate с выключенной морфологией отклоняется", async () => {

@@ -47,6 +47,22 @@ describe("privacy/restore: уровень 1 (точный) и обратная �
     expect(r.byTier.exact).toBe(3);
   });
 
+  // Ярлык один на человека, поэтому форму выбирает контекст ярлыка — на всех трёх уровнях,
+  // включая искажённые моделью написания.
+  it("падеж восстанавливается на уровнях loose и fuzzy, а не только exact", () => {
+    const v = new TokenVault();
+    const token = v.tokenFor("PER", "Иванов И.П.", "Иванов И.П.");
+    v.setSurface(token, { lemma: "Иванов И.П.", morph: { gender: "masc" } });
+    v.recordUse(token, "направлено", "Иванову И.П.");
+
+    expect(restoreText("Задание направлено [PER_01]", v, FUZZY).text)
+      .toBe("Задание направлено Иванову И.П.");
+    expect(restoreText("Задание направлено [PER_1]", v, FUZZY).text)
+      .toBe("Задание направлено Иванову И.П.");
+    expect(restoreText("Работали с [РER_01]", v, FUZZY).text)
+      .toBe("Работали с Ивановым И.П.");
+  });
+
   it("тип с подчёркиванием восстанавливается", () => {
     const v = new TokenVault();
     const token = v.tokenFor("LICENSE_SUBSOIL", "МСК 12345 ТЭ");

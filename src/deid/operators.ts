@@ -1,6 +1,7 @@
 import { Faker, ru } from "@faker-js/faker";
 import type { EntityType } from "./entities";
 import type { MorphAdapter, MorphForm } from "./morph";
+import { parseName } from "./surname";
 import {
   isValidCard,
   isValidInn,
@@ -155,6 +156,16 @@ export function createSurrogateOperator(opts?: {
       for (let attempt = 0; attempt < 8; attempt++) {
         const candidate = generatedSurface(faker, type, raw, { ...ctx, seed: ctx.seed + attempt });
         if (!candidate) continue;
+        // Вымышленная фамилия иногда совпадает с настоящей: у faker их 250, и «Иванов» среди
+        // них. Тогда «обезличенный» текст по-прежнему содержит настоящую фамилию — то есть
+        // суррогат не выполнил свою единственную задачу. Сверки готовой строки целиком мало:
+        // она отличается инициалами и падежом («Иванов В.А.» против «Иванову И.И.»), поэтому
+        // ищем в исходном тексте саму ФАМИЛИЮ — её именительный является префиксом всех
+        // падежных форм, так что подстроки достаточно.
+        if (type === "PER") {
+          const { surname } = parseName(candidate);
+          if (surname && ctx.sourceText.includes(surname)) continue;
+        }
         const surface = opts?.morph?.inflect(candidate, ctx.morph ?? {}, type) ?? candidate;
         if (!ctx.taken.has(surface) && !ctx.sourceText.includes(surface)) return surface;
       }

@@ -116,4 +116,31 @@ describe("privacy/deid/operators", () => {
       }),
     ).toBe("Смирнов И.И.");
   });
+
+  // У faker 250 русских фамилий, и «Иванов» среди них: примерно раз на двести суррогат
+  // совпадал с настоящей фамилией, и «обезличенный» текст по-прежнему её содержал.
+  it("вымышленная фамилия не совпадает с настоящей", () => {
+    let seed = 0;
+    const faker: FakerLike = {
+      seed(value) {
+        seed = value;
+      },
+      // первая попытка отдаёт ровно ту фамилию, что стоит в тексте
+      person: {
+        lastName: () => (seed === 5 ? "Иванов" : "Смирнов"),
+        firstName: () => "Пётр",
+        middleName: () => "Петрович",
+      },
+      company: { name: () => "Ромашка" },
+      internet: { email: () => "a@example.test" },
+      location: { streetAddress: () => "Новая улица, 1" },
+    };
+    const surface = createSurrogateOperator({ faker }).render("PER", "[PER_01]", "Иванову И.И.", {
+      seed: 5,
+      scopeSeed: 1,
+      taken: new Set(),
+      sourceText: "Поручено Иванову И.И.",
+    });
+    expect(surface).toBe("Смирнов П.П.");
+  });
 });

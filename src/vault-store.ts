@@ -28,9 +28,14 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:
 export interface VaultEntry {
   token: string;
   type: string;
+  /** Каноническая форма — та, что встретилась первой. Её отдаёт `original()`. */
   raw: string;
+  /** Ключ дедупа личности (для ФИО — именительный падеж). Нет → ключ равен `raw`. */
+  identity?: string;
   lemma?: string;
   morph?: Record<string, string>;
+  /** Слово слева → форма оригинала, стоявшая после него. См. deid/identity.ts. */
+  uses?: Record<string, string>;
   surface?: string;
   surrogateLemma?: string;
 }

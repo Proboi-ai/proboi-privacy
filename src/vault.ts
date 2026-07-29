@@ -15,6 +15,9 @@
 import { createHmac, randomBytes } from "node:crypto";
 import type { VaultEntry, VaultStore } from "./vault-store";
 
+/** Потолок слов-подсказок на одну личность: документ длинный, а запись сейфа должна быть конечной. */
+const MAX_USES = 64;
+
 /** Разбирает номер из токена [TYPE_NN] (для восстановления счётчиков при гидрации). */
 function tokenNumber(token: string): number | null {
   const m = /_(\d+)\]$/.exec(token);
@@ -43,7 +46,10 @@ export class TokenVault {
     if (this.store && this.scope !== undefined) {
       for (const e of this.store.load(this.scope)) {
         this.byToken.set(e.token, e);
-        this.byKey.set(this.keyOf(e.type, e.raw), e.token);
+        // Записи, сделанные до появления ключа личности, его не несут — гидрируем по сырой
+        // строке, то есть ровно с прежним поведением. Отдельная миграция не нужна: новые
+        // формы того же человека просто заведут новый токен, старые продолжат разрешаться.
+        this.byKey.set(this.keyOf(e.type, e.identity ?? e.raw), e.token);
         const n = tokenNumber(e.token);
         if (n !== null && n > (this.counters.get(e.type) ?? 0)) this.counters.set(e.type, n);
       }
@@ -51,23 +57,33 @@ export class TokenVault {
   }
 
   /**
-   * Ключ дедупа для (тип, оригинал).  -разделитель (не может встретиться в тексте) —
+   * Ключ дедупа для (тип, ЛИЧНОСТЬ).  -разделитель (не может встретиться в тексте) —
    * ЕДИНЫЙ источник формата для tokenFor И гидрации из стора: если они разойдутся, дедуп после
    * рестарта промахнётся и наплодит дубль-токены.
+   *
+   * Личность — это лемма, если вызывающий её посчитал (для ФИО — именительный падеж), иначе
+   * сама строка. Поэтому «Иванов И.П.», «Иванову И.П.» и «Ивановым И.П.» дают ОДИН токен:
+   * для модели это один человек. Какая форма где стояла — в `uses`, см. deid/identity.ts.
    */
-  private keyOf(type: string, raw: string): string {
-    return `${type}\0${raw}`;
+  private keyOf(type: string, identity: string): string {
+    return `${type}\0${identity}`;
   }
 
-  /** Токен для (тип, оригинал). Формат: [TYPE_NN]. Повтор → тот же токен. */
-  tokenFor(type: string, raw: string): string {
-    const key = this.keyOf(type, raw);
+  /**
+   * Токен для (тип, оригинал). Формат: [TYPE_NN]. Повтор → тот же токен.
+   *
+   * `identity` — ключ личности (лемма); не задан → ключом остаётся сама строка, то есть
+   * прежнее поведение байт-в-байт. `raw` первого вхождения становится канонической формой,
+   * которую отдаёт `original()`.
+   */
+  tokenFor(type: string, raw: string, identity?: string): string {
+    const key = this.keyOf(type, identity ?? raw);
     const existing = this.byKey.get(key);
     if (existing) return existing;
     const n = (this.counters.get(type) ?? 0) + 1;
     this.counters.set(type, n);
     const token = `[${type}_${String(n).padStart(2, "0")}]`;
-    const entry = { token, type, raw };
+    const entry: VaultEntry = { token, type, raw, ...(identity === undefined ? {} : { identity }) };
     this.byToken.set(token, entry);
     this.byKey.set(key, token);
     // durable: новый токен переживёт рестарт (значение шифруется внутри стора).
@@ -75,6 +91,42 @@ export class TokenVault {
       this.store.put(this.scope, entry);
     }
     return token;
+  }
+
+  /**
+   * Запоминает, какая форма оригинала стояла после слова `cue`: «направлено» → «Иванову И.П.».
+   * Первое наблюдение выигрывает — так возврат детерминирован и не зависит от порядка обхода.
+   * Потолок на число подсказок держит запись сейфа ограниченной на документах любой длины.
+   */
+  recordUse(token: string, cue: string, form: string): void {
+    const current = this.byToken.get(token);
+    if (!current || !cue) return;
+    const uses = current.uses ?? {};
+    if (uses[cue] !== undefined || Object.keys(uses).length >= MAX_USES) return;
+    const next = { ...current, uses: { ...uses, [cue]: form } };
+    this.byToken.set(token, next);
+    if (this.store && this.scope !== undefined) this.store.put(this.scope, next);
+  }
+
+  /** Наблюдённая форма для этого слова-подсказки; не встречалась → undefined. */
+  useFor(token: string, cue: string): string | undefined {
+    return this.byToken.get(token)?.uses?.[cue];
+  }
+
+  /**
+   * ВСЕ известные написания оригиналов — канонические формы и все наблюдённые падежные.
+   * Нужны fail-closed проверкам («в собранном файле не осталось ни одного оригинала»):
+   * `original()` отдаёт лишь каноническую форму, и проверка по ней одной пропустила бы
+   * «Иванову И.П.» в тексте.
+   */
+  originals(): string[] {
+    const out = new Set<string>();
+    for (const e of this.byToken.values()) {
+      out.add(e.raw);
+      if (e.lemma) out.add(e.lemma);
+      for (const form of Object.values(e.uses ?? {})) out.add(form);
+    }
+    return [...out];
   }
 
   /** Оригинал по токену (ре-идентификация, только локально). */

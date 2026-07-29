@@ -73,10 +73,9 @@ export async function deidentifyXlsx(
       morph: opts.morph,
     });
     if (result.count) {
-      for (const token of vault.tokens()) {
-        const raw = vault.original(token);
-        if (raw) originals.add(raw);
-      }
+      // Именно `originals()`, а не `original()` по токенам: ярлык теперь один на человека,
+      // и канонической формы мало — проверка обязана искать в книге ВСЕ падежные написания.
+      for (const raw of vault.originals()) originals.add(raw);
       replacements += result.count;
     }
     return result.text;

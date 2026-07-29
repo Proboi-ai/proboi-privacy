@@ -29,8 +29,8 @@
  * Искажённый `PER` не может стать записью `ORG` — тип у результата всегда тот, что распознан.
  */
 
+import { originalFor, surrogateForms, type IdentityVault } from "./identity";
 import { levenshteinWithin } from "./levenshtein";
-import { fullNameForms, inflectFullName, type GramCase, type Gender } from "./surname";
 
 export type RestoreTier = "exact" | "loose" | "fuzzy" | "morph";
 
@@ -54,12 +54,12 @@ export interface RestoreOpts {
 }
 
 /** Доступ к сейфу, нужный возврату. `TokenVault` реализует его как есть. */
-export interface RestoreVault {
+export interface RestoreVault extends IdentityVault {
   original(token: string): string | undefined;
   tokens(): string[];
   surfaces?(): Array<{ token: string; surface: string }>;
   /** Тип и сохранённый род нужны, чтобы искать суррогат ФИО во всех падежах. */
-  entry?(token: string): { type: string; morph?: Record<string, string> } | undefined;
+  entry?(token: string): { type: string; lemma?: string; morph?: Record<string, string> } | undefined;
 }
 
 /**
@@ -136,46 +136,6 @@ function resolveTypeFuzzy(candidateType: string, knownTypes: string[]): string |
   return tied ? null : best;
 }
 
-/**
- * Уровень 4 — суррогаты во ВСЕХ падежах.
- *
- * Модель получает связный текст с вымышленным человеком и свободно его склоняет:
- * выдали «Петров А.В.» — в ответе «направлено Петрову А.В.», «подписано Петровым А.В.».
- * Поиск по одной выданной поверхности такие формы не находит, и пользователь получает в
- * документе ВЫМЫШЛЕННОГО человека вместо настоящего — то есть молчаливую подмену, а не
- * видимый висящий ярлык. Поэтому для ФИО строим все шесть форм суррогата и подставляем
- * оригинал, склонённый в тот же падеж.
- *
- * Порядок — от длинной формы к короткой: иначе «Петров» съел бы начало «Петровым».
- */
-function surrogateForms(vault: RestoreVault): Array<{ form: string; replacement: string }> {
-  const out: Array<{ form: string; replacement: string }> = [];
-  const seen = new Set<string>();
-  for (const { token, surface } of vault.surfaces?.() ?? []) {
-    const original = vault.original(token);
-    if (!original || !surface) continue;
-    const entry = vault.entry?.(token);
-    const gender = entry?.morph?.gender === "femn" ? "femn" : entry?.morph?.gender === "masc" ? "masc" : undefined;
-
-    const variants: Array<[GramCase, string]> =
-      entry?.type === "PER" || entry === undefined
-        ? fullNameForms(surface, gender as Gender | undefined)
-        : [["nom", surface]];
-
-    for (const [gramCase, form] of variants) {
-      if (seen.has(form)) continue; // одна и та же форма у двух людей — не угадываем, берём первую
-      seen.add(form);
-      out.push({
-        form,
-        // Оригинал ставим в тот же падеж, в каком модель употребила суррогат. Не вышло —
-        // fail-open внутри inflectFullName вернёт исходную форму: имя верное, падеж прежний.
-        replacement: gramCase === "nom" ? original : inflectFullName(original, gramCase, gender as Gender | undefined),
-      });
-    }
-  }
-  return out.sort((a, b) => b.form.length - a.form.length);
-}
-
 /** Участок текста, на месте которого должен оказаться оригинал. */
 export interface RestoreSpan {
   start: number;
@@ -232,8 +192,13 @@ export function restoreSpans(
     const end = start + candidate.length;
     if (!free(start, end)) continue;
 
+    // Форма оригинала выбирается по МЕСТУ ярлыка (deid/identity.ts): ярлык один на человека,
+    // а «направлено [PER_01]» обязано вернуться как «направлено Иванову И.П.».
+    const formAt = (token: string | undefined): string | undefined =>
+      token === undefined ? undefined : originalFor(vault, token, text, start);
+
     // Уровень 1 — точный. Работает всегда, в том числе при выключенных уровнях 2–3.
-    const exact = vault.original(candidate);
+    const exact = formAt(candidate);
     if (exact !== undefined) {
       claim({ start, end, replacement: exact, tier: "exact" });
       continue;
@@ -244,8 +209,7 @@ export function restoreSpans(
     if (!parsed) continue; // не наша форма (markdown-ссылка и т.п.) — молча мимо
 
     // Уровень 2 — свободный: регистр, ведущий ноль, тире/пробел/перенос, разметка внутри.
-    const loose = byKey.get(keyOf(parsed.type, parsed.num));
-    const looseOriginal = loose === undefined ? undefined : vault.original(loose);
+    const looseOriginal = formAt(byKey.get(keyOf(parsed.type, parsed.num)));
     if (looseOriginal !== undefined) {
       claim({ start, end, replacement: looseOriginal, tier: "loose" });
       continue;
@@ -253,9 +217,9 @@ export function restoreSpans(
 
     // Уровень 3 — нечёткий: искажено ИМЯ ТИПА, номер обязан совпасть точно.
     const resolvedType = resolveTypeFuzzy(parsed.type, types);
-    const fuzzyToken =
-      resolvedType === null ? undefined : byKey.get(keyOf(resolvedType, parsed.num));
-    const fuzzyOriginal = fuzzyToken === undefined ? undefined : vault.original(fuzzyToken);
+    const fuzzyOriginal = formAt(
+      resolvedType === null ? undefined : byKey.get(keyOf(resolvedType, parsed.num)),
+    );
     if (fuzzyOriginal !== undefined) {
       claim({ start, end, replacement: fuzzyOriginal, tier: "fuzzy" });
       continue;
