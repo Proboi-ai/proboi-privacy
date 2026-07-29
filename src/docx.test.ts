@@ -171,3 +171,39 @@ describe("privacy/docx: возврат оригиналов", () => {
     expect(await textOf(restored.bytes)).toBe("Пробы отобрал Ким П.С. на участке");
   });
 });
+
+describe("privacy/docx: текст, каким его отдаёт конвейер", () => {
+  // В настоящих документах ФИО приходит порченым: подпись набрана капсом, заголовок
+  // разрядкой, а после OCR кириллическая «О» оказывается латинской. Замер показал, что на
+  // таком тексте стек терял треть имён; нормализация идёт до детекции, но подставлять в
+  // документ обязана ИСХОДНОЕ написание — иначе де-ид сам портит файл.
+  it("находит ФИО в подписи капсом, разрядке и после OCR", async () => {
+    for (const [source, expected] of [
+      ["Отчёт составил КОВАЛЁВ Д.А. лично", "КОВАЛЁВ Д.А."],
+      ["Отчёт составил К о в а л ё в  Д. А. лично", "К о в а л ё в  Д. А."],
+      ["Отчёт составил Koвaлёв Д.А. лично", "Koвaлёв Д.А."],
+      ["Отчёт составил Кова-\nлёв Д.А. лично", "Кова-\nлёв Д.А."],
+    ] as const) {
+      const input = await buildDocx({ "word/document.xml": document(paragraph(run(source))) });
+      const vault = new TokenVault();
+      const { bytes, replacements } = await deidentifyDocx(input, vault, GEO);
+
+      expect(replacements).toBe(1);
+      expect(vault.original("[PER_01]")).toBe(expected);
+      // самое важное: в собранном файле не осталось ни куска исходного написания
+      expect(await textOf(bytes)).not.toContain("овалёв");
+      expect(await textOf(bytes)).not.toContain("ОВАЛЁВ");
+    }
+  });
+
+  it("круговой рейс возвращает порченое написание байт-в-байт", async () => {
+    const source = document(paragraph(run("Отчёт составил КОВАЛЁВ Д.А. лично")));
+    const input = await buildDocx({ "word/document.xml": source });
+    const vault = new TokenVault();
+
+    const hidden = await deidentifyDocx(input, vault, GEO);
+    const restored = await reidentifyDocx(hidden.bytes, vault, { fuzzy: true });
+
+    expect(await textOf(restored.bytes)).toBe("Отчёт составил КОВАЛЁВ Д.А. лично");
+  });
+});
