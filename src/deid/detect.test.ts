@@ -18,6 +18,44 @@ describe("privacy/deid/detect: ФИО", () => {
     const e = detectEntities("Ответственный: Сидоров Пётр Иванович", ["PER"]);
     expect(e.map((x) => x.raw)).toContain("Сидоров Пётр Иванович");
   });
+
+  it("составная фамилия через дефис", () => {
+    for (const [text, expected] of [
+      ["Отчёт составил Тер-Петросян А.Б.", "Тер-Петросян А.Б."],
+      ["Исполнитель: Мамед-заде И.О.", "Мамед-заде И.О."],
+      ["Сухово-Кобылин В.А., начальник партии", "Сухово-Кобылин В.А."],
+    ] as const) {
+      expect(detectEntities(text, ["PER"]).map((x) => x.raw)).toContain(expected);
+    }
+  });
+
+  it("ФИО с восточным формантом отчества", () => {
+    expect(detectEntities("Начальник партии Алиев Гейдар Али оглы", ["PER"]).map((x) => x.raw))
+      .toContain("Алиев Гейдар Али оглы");
+    expect(detectEntities("Геолог Мамедова Лейла Ариф кызы", ["PER"]).map((x) => x.raw))
+      .toContain("Мамедова Лейла Ариф кызы");
+  });
+
+  it("подпись с одним инициалом", () => {
+    const e = detectEntities("Проверил Гончарук И.", ["PER"]);
+    expect(e.map((x) => x.raw)).toContain("Гончарук И.");
+    expect(e[0]!.confidence).toBe("medium");
+  });
+
+  it("рубрикатор с буквой человеком НЕ считается", () => {
+    for (const text of [
+      "Приложение А. Схема расположения",
+      "Таблица Б. Результаты опробования",
+      "См. рисунок В. Разрез по линии",
+    ]) {
+      expect(detectEntities(text, ["PER"])).toHaveLength(0);
+    }
+  });
+
+  it("инициалы без замыкающей точки (ячейка таблицы)", () => {
+    expect(detectEntities("В ячейке: Иванов И.С", ["PER"]).map((x) => x.raw))
+      .toContain("Иванов И.С");
+  });
 });
 
 describe("privacy/deid/detect: ORG / DATE / CASE", () => {
