@@ -88,7 +88,56 @@ interface Rule {
   type: EntityType;
   re: RegExp;
   confidence: "high" | "medium";
-  validate?: (raw: string, text: string) => boolean;
+  validate?: (raw: string, text: string, index: number) => boolean;
+}
+
+// ─── Инициалы: к какому слову они относятся ──────────────────────────────────
+//
+// «Слово И.О. Слово» читается двумя способами — «Фамилия И.О.» и «И.О. Фамилия», — и по
+// форме они неразличимы: «Отчёт составил Иванов И.П. Задание направлено…» против
+// «Утвердил А.С. Петров». Различает их ровно один признак: ИНФОРМАТИВНА ЛИ ЗАГЛАВНАЯ БУКВА
+// у слова слева от инициалов. «Иванов» стоит посреди фразы — заглавная там значит «имя
+// собственное». «Утвердил» стоит в начале строки — заглавная навязана позицией и не значит
+// ничего. Отсюда два симметричных фильтра ниже; словарь слов для этого не нужен.
+
+/** Строка состоит только из отступа и маркера списка — заглавная после неё вынужденная. */
+const LINE_LEAD_ONLY = /^[\s\d.)(•‣*·>|–—-]*$/u;
+
+/** Конец предложения непосредственно перед словом — заглавная после него вынужденная. */
+const SENTENCE_END_BEFORE = /[.!?…][»"')\]]?\s*$/u;
+
+/** Заглавная в позиции `index` навязана позицией (начало строки/пункта/предложения). */
+function capitalIsForced(text: string, index: number): boolean {
+  const line = text.slice(text.lastIndexOf("\n", index - 1) + 1, index);
+  return LINE_LEAD_ONLY.test(line) || SENTENCE_END_BEFORE.test(line);
+}
+
+/** Слово перед инициалами, годное в фамилии. Окно ограничено строкой — ФИО её не пересекает. */
+const SURNAME_BEFORE = new RegExp(`(?<![А-Яа-яЁё-])${SURNAME}[ \\u00a0\\t]+$`, "u");
+
+/** Заглавное слово сразу после инициалов, годное в фамилии. */
+const SURNAME_AFTER = /^[  \t]?[А-ЯЁ][а-яё]/u;
+
+/**
+ * Слева от инициалов стоит слово, которое читается как фамилия: заглавное И с
+ * информативной заглавной. Тогда инициалы принадлежат ему, а не слову справа.
+ */
+function surnamePrecedes(text: string, index: number): boolean {
+  const from = Math.max(text.lastIndexOf("\n", index - 1) + 1, index - 96);
+  const m = SURNAME_BEFORE.exec(text.slice(from, index));
+  return m !== null && !capitalIsForced(text, from + m.index);
+}
+
+/**
+ * Фильтр правила «Фамилия И.О.»: уступить форме «И.О. Фамилия» ТОЛЬКО когда слово слева не
+ * может быть фамилией по позиции. Раньше здесь стоял безусловный lookahead — из-за него
+ * «Иванов И.П. Задание» не матчилось вовсе, фамилия оставалась в тексте открытой, а в сейф
+ * как человек попадало «И.П. Задание».
+ */
+function surnameBindsLeft(raw: string, text: string, index: number): boolean {
+  if (!capitalIsForced(text, index)) return true;
+  const end = index + raw.length;
+  return !SURNAME_AFTER.test(text.slice(end, end + 3));
 }
 
 const RULES: Rule[] = [
@@ -310,20 +359,23 @@ const RULES: Rule[] = [
   // (?<!…)/(?!…) вместо \b — в JS \b работает по ASCII \w и с кириллицей ломается.
   {
     type: "PER",
-    // Два хвостовых условия. С точкой — следом не должно быть фамилии (иначе это форма
-    // «И.О. Фамилия», и матч «Утвердил А.С» откусил бы у неё инициалы). Без точки —
-    // следом не должно быть ни точки, ни буквы: «Иванов И.С» в конце ячейки таблицы.
+    // Хвост без точки: следом не должно быть ни точки, ни буквы — «Иванов И.С» в конце
+    // ячейки таблицы. Конфликт с формой «И.О. Фамилия» разрешает validate, а не lookahead.
     re: new RegExp(
-      `(?<![А-Яа-яЁё])${SURNAME}\\s+[А-ЯЁ]\\.\\s?[А-ЯЁ](?:\\.(?!\\s?[А-ЯЁ][а-яё])|(?![.А-Яа-яЁёA-Za-z]))`,
+      `(?<![А-Яа-яЁё])${SURNAME}\\s+[А-ЯЁ]\\.\\s?[А-ЯЁ](?:\\.|(?![.А-Яа-яЁёA-Za-z]))`,
       "gu",
     ),
     confidence: "high",
+    validate: surnameBindsLeft,
   },
   // PER: И.О. Фамилия
   {
     type: "PER",
     re: new RegExp(`(?<![А-Яа-яЁё])[А-ЯЁ]\\.\\s?[А-ЯЁ]\\.\\s?${SURNAME}(?![а-яё])`, "gu"),
     confidence: "high",
+    // Инициалы уже принадлежат фамилии слева («Иванов И.П. Задание») — справа не фамилия,
+    // а первое слово следующего предложения.
+    validate: (_raw, text, index) => !surnamePrecedes(text, index),
   },
   // PER: Фамилия Имя Отчество (отчество -вич/-вна/-ична)
   {
@@ -348,11 +400,14 @@ const RULES: Rule[] = [
   // фильтр рубрикаторов — по слову ПЕРЕД инициалом, а не по инициалу.
   {
     type: "PER",
-    re: new RegExp(`(?<![А-Яа-яЁё])${SURNAME}\\s+[А-ЯЁ]\\.(?!\\s?[А-ЯЁ])`, "gu"),
+    re: new RegExp(`(?<![А-Яа-яЁё])${SURNAME}\\s+[А-ЯЁ]\\.(?!\\s?[А-ЯЁ]\\.)`, "gu"),
     confidence: "medium",
-    validate: (raw) => {
+    validate: (raw, text, index) => {
       const head = raw.split(/\s+/u)[0]!.toLowerCase();
-      return !RUBRIC_WORDS.has(head);
+      if (RUBRIC_WORDS.has(head)) return false;
+      // Тот же фильтр, что и у двух инициалов: «Гончарук И. Замечаний нет» — подпись,
+      // «Приложение А. Схема» — рубрикатор, и различает их позиция заглавной буквы.
+      return surnameBindsLeft(raw, text, index);
     },
   },
 ];
@@ -390,7 +445,7 @@ export function detectEntities(text: string, types: EntityType[]): DetectedEntit
   const found: DetectedEntity[] = [];
   for (const rule of active) {
     for (const m of text.matchAll(rule.re)) {
-      if (rule.validate && !rule.validate(m[0], text)) continue;
+      if (rule.validate && !rule.validate(m[0], text, m.index!)) continue;
       found.push({ type: rule.type, raw: m[0], index: m.index!, confidence: rule.confidence, source: "rule" });
     }
   }
