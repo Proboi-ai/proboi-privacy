@@ -40,3 +40,37 @@ describe("privacy/deid/morph: local", () => {
     );
   });
 });
+
+describe("privacy/deid/morph: ФИО нерусского происхождения", () => {
+  it("не склоняет неизменяемую приставку дефисной фамилии", () => {
+    expect(morph.inflect("Тер-Петросян А.Б.", { case: "dat", gender: "masc" }, "PER")).toBe(
+      "Тер-Петросяну А.Б.",
+    );
+  });
+
+  it("определяет женский пол по отчеству и не склоняет фамилию на согласный", () => {
+    const analysis = morph.analyze("Ким Ольга Сергеевна", "PER");
+    expect(analysis?.form.gender).toBe("femn");
+    expect(morph.inflect("Ким О.С.", { case: "dat", gender: "femn" }, "PER")).toBe("Ким О.С.");
+  });
+
+  it("ту же фамилию у мужчины склоняет", () => {
+    expect(morph.inflect("Ким П.С.", { case: "dat", gender: "masc" }, "PER")).toBe("Киму П.С.");
+  });
+
+  it("определяет пол по восточному форманту отчества", () => {
+    expect(morph.analyze("Алиев Гейдар Али оглы", "PER")?.form.gender).toBe("masc");
+    expect(morph.analyze("Мамедова Лейла Ариф кызы", "PER")?.form.gender).toBe("femn");
+  });
+
+  it("даёт ОДНУ лемму на все падежи — один человек не получит два суррогата", () => {
+    const nominative = morph.analyze("Оганесян А.Р.", "PER")?.lemma;
+    expect(morph.analyze("Оганесяну А.Р.", "PER")?.lemma).toBe(nominative!);
+    expect(morph.analyze("Оганесяном А.Р.", "PER")?.lemma).toBe(nominative!);
+  });
+
+  it("определяет падеж нерусской фамилии", () => {
+    expect(morph.analyze("Кимом П.С.", "PER")?.form.case).toBe("ins");
+    expect(morph.analyze("Гончаруку И.П.", "PER")?.form.case).toBe("dat");
+  });
+});

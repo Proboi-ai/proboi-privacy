@@ -1,13 +1,24 @@
-import {
-  cityFrom,
-  cityIn,
-  cityTo,
-  getLastnameGender,
-  inclineLastname,
-} from "lvovich";
-import type { EntityType } from "./entities";
+/**
+ * Морфология поверхностей: определить форму оригинала и поставить суррогат в ту же.
+ *
+ * Разбор и склонение самих фамилий вынесены в `surname.ts` — там же объяснено, почему
+ * поверх `lvovich` понадобился слой правил (дефисные фамилии, пол нерусских ФИО,
+ * несклоняемые женские на согласный).
+ */
 
-export type GramCase = "nom" | "gen" | "dat" | "acc" | "ins" | "loc";
+import { cityFrom, cityIn, cityTo } from "lvovich";
+import type { EntityType } from "./entities";
+import {
+  inferSurnameCase,
+  inflectFullName,
+  lemmatizeSurname,
+  parseName,
+  type GramCase,
+  type Gender,
+} from "./surname";
+
+export type { GramCase } from "./surname";
+
 export interface MorphForm {
   case?: GramCase;
   gender?: "masc" | "femn" | "neut";
@@ -21,56 +32,39 @@ export interface MorphAdapter {
   agreeWithNumber?(n: number, lemma: string): string;
 }
 
-const CASES = {
-  nom: "nominative",
-  gen: "genitive",
-  dat: "dative",
-  acc: "accusative",
-  ins: "instrumental",
-  loc: "prepositional",
-} as const;
-
-function surnameOf(raw: string): string {
-  const first = raw.trim().split(/\s+/)[0] ?? raw;
-  return /^[А-ЯЁ]\.$/u.test(first) ? raw.trim().split(/\s+/).at(-1) ?? raw : first;
-}
-
-function inferCase(surname: string): GramCase {
-  const lower = surname.toLowerCase();
-  if (/(?:ову|еву|ину|ыну|скому|цкому)$/u.test(lower)) return "dat";
-  if (/(?:овым|евым|иным|ыным|ским|цким)$/u.test(lower)) return "ins";
-  if (/(?:ове|еве|ине|ыне|ском|цком)$/u.test(lower)) return "loc";
-  if (/(?:ова|ева|ина|ына|ского|цкого)$/u.test(lower)) return "gen";
-  return "nom";
+/** Средний род в наших данных не встречается у ФИО; сводим к мужскому — как и раньше. */
+function toGender(value: MorphForm["gender"]): Gender {
+  return value === "femn" ? "femn" : "masc";
 }
 
 function inflectPerson(value: string, form: MorphForm): string {
-  if (!form.case || form.case === "nom") return value;
-  const parts = value.split(/\s+/);
-  const surnameIndex = /^[А-ЯЁ]\.$/u.test(parts[0] ?? "") ? parts.length - 1 : 0;
-  const surname = parts[surnameIndex];
-  if (!surname) return value;
-  const gender = form.gender === "femn" ? "female" : "male";
-  parts[surnameIndex] = inclineLastname(surname, CASES[form.case], gender);
-  return parts.join(" ");
+  return inflectFullName(value, form.case ?? "nom", form.gender ? toGender(form.gender) : undefined);
 }
 
 export function createLocalMorphAdapter(): MorphAdapter {
   return {
     id: "local",
+
     analyze(raw, type) {
       if (type !== "PER") return { lemma: raw, form: {} };
-      const surname = surnameOf(raw);
-      const gender = getLastnameGender(surname);
+      const parsed = parseName(raw);
+      if (parsed.surnameIndex < 0) return { lemma: raw, form: {} };
+      const gender = parsed.gender ?? "masc";
+      const lemmaSurname = lemmatizeSurname(parsed.surname, gender);
+      const parts = [...parsed.parts];
+      parts[parsed.surnameIndex] = lemmaSurname;
       return {
-        lemma: raw,
+        // Лемма — ключ личности: «Иванову И.И.» и «Иванов И.И.» должны дать ОДИН суррогат,
+        // иначе один человек появляется в документе под двумя вымышленными именами.
+        lemma: parts.join(" "),
         form: {
-          case: inferCase(surname),
-          gender: gender === "female" ? "femn" : "masc",
+          case: inferSurnameCase(parsed.surname, gender),
+          gender: parsed.gender ?? "masc",
           number: "sing",
         },
       };
     },
+
     inflect(value, form, type) {
       try {
         if (type === "PER") return inflectPerson(value, form);
@@ -84,6 +78,7 @@ export function createLocalMorphAdapter(): MorphAdapter {
       }
       return value;
     },
+
     agreeWithNumber(n, lemma) {
       // ponytail: локальный fallback только для частого -а; sidecar покрывает общую морфологию.
       if (!lemma.endsWith("а")) return lemma;
