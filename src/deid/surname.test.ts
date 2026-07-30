@@ -65,7 +65,7 @@ describe("privacy/deid/surname: склонение", () => {
   });
 
   it("оставляет несклоняемые классы как есть", () => {
-    for (const surname of ["Шевченко", "Даниленко", "Черных", "Долгих", "Живаго", "Гулиа", "Ли"]) {
+    for (const surname of ["Кириленко", "Даниленко", "Черных", "Долгих", "Живаго", "Гулиа", "Ли"]) {
       expect(inflectSurname(surname, "gen", "masc")).toBe(surname);
     }
   });
@@ -87,7 +87,7 @@ describe("privacy/deid/surname: лемма и падеж", () => {
   });
 
   it("не трогает именительный, похожий на косвенный", () => {
-    for (const surname of ["Гулиа", "Данелия", "Ким", "Шевченко", "Черных", "Ли"]) {
+    for (const surname of ["Гулиа", "Данелия", "Ким", "Кириленко", "Черных", "Ли"]) {
       expect(lemmatizeSurname(surname, "masc")).toBe(surname);
     }
   });
@@ -104,7 +104,7 @@ describe("privacy/deid/surname: лемма и падеж", () => {
     expect(inferSurnameCase("Оганесяну", "masc")).toBe("dat");
     expect(inferSurnameCase("Иванову", "masc")).toBe("dat");
     expect(inferSurnameCase("Ким", "masc")).toBe("nom");
-    expect(inferSurnameCase("Шевченко", "masc")).toBe("nom");
+    expect(inferSurnameCase("Кириленко", "masc")).toBe("nom");
   });
 
   it("строит все шесть форм", () => {
@@ -112,6 +112,6 @@ describe("privacy/deid/surname: лемма и падеж", () => {
     expect(forms.get("nom")).toBe("Гончарук");
     expect(forms.get("gen")).toBe("Гончарука");
     expect(forms.get("ins")).toBe("Гончаруком");
-    expect(new Set(surnameForms("Шевченко", "masc").values()).size).toBe(1);
+    expect(new Set(surnameForms("Кириленко", "masc").values()).size).toBe(1);
   });
 });
