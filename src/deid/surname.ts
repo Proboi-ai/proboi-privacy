@@ -69,8 +69,12 @@ const MASC_NAMES_ON_A = new Set([
 function genderFromPatronymic(word: string): Gender | null {
   const w = word.toLowerCase().replace(/\.$/u, "");
   for (const [marker, gender] of PATRONYMIC_MARKERS) if (marker.test(w)) return gender;
-  if (/(?:вна|ична|инична)$/u.test(w)) return "femn";
-  if (/(?:вич|ич)$/u.test(w) && w.length > 4) return "masc";
+  // Падежные окончания обязательны. В шапке договора стороны представляются в родительном
+  // («в лице Гвоздева Алексея Петровича»), и правило на ИМЕНИТЕЛЬНОЕ отчество пола там не
+  // давало вовсе — дальше пол брался с имени по окончанию, а «Алексея» по окончанию женское.
+  // Отсюда женский суррогат мужчине и склонение фамилии по чужому образцу.
+  if (/(?:вн|ичн|иничн)(?:а|ы|е|у|ой|ою)?$/u.test(w)) return "femn";
+  if (/(?:вич|ич)(?:ем|а|у|е)?$/u.test(w) && w.length > 4) return "masc";
   return null;
 }
 

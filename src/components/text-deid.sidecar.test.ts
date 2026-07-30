@@ -25,19 +25,32 @@ describe("privacy/text-deid: upgrade сайдкаром (опциональны�
     const vault = new TokenVault();
     const events: unknown[] = [];
     const comp = createTextDeidComponent(vault, { sidecar: sm });
-    // «СЕКРЕ» (первые 5) — мок вернёт как PER; TS-дефолт тут PII не видит
-    const p: Payload = { kind: "text", text: "СЕКРЕТ отчёт", meta: {} };
+    // «Кимов» (первые 5) — мок вернёт как PER; TS-дефолт тут PII не видит.
+    // Значение обязано выглядеть фамилией: одиночные кандидаты NER без признаков имени и без
+    // договорной подсказки снимает фильтр точности (deid/precision.ts).
+    const p: Payload = { kind: "text", text: "Кимов отчёт", meta: {} };
     const out = await comp.beforeEgress!(p, ctx(events));
     expect(out.text).toContain("[PER_01]");
-    expect(out.text).not.toContain("СЕКРЕ");
+    expect(out.text).not.toContain("Кимов");
     expect((events[0] as any).detail.sidecar).toBe(true);
   });
 
-  it("сайдкар down → фолбэк на TS-дефолт (sidecar:false), TS PII всё равно ловится", async () => {
+  // Раньше здесь проверялось обратное — что при мёртвом сайдкаре мы молча падаем на правила.
+  // Именно эта тихая деградация и сорвала замер 29.07: сайдкар не поднялся, конфигурация
+  // выродилась в голые правила и выдала правдоподобные цифры, поймали только сверкой хэшей.
+  it("сайдкар НАСТРОЕН, но down → егресс заблокирован, а не тихий откат на правила", async () => {
     sm = new SidecarManager(["bun", MOCK]);
     // НЕ стартуем → status 'down'
+    const comp = createTextDeidComponent(new TokenVault(), { sidecar: sm });
+    const p: Payload = { kind: "text", text: "Иванов И.П. сдал отчёт", meta: {} };
+    expect(comp.beforeEgress!(p, ctx([]))).rejects.toThrow(/сайдкар Natasha/u);
+  });
+
+  it("сайдкар НЕ настроен (absent) → это поставка «клиент без сайдкара», правила работают", async () => {
     const vault = new TokenVault();
     const events: unknown[] = [];
+    // Пустая команда → status 'absent': осознанный TS-only режим, а не поломка.
+    sm = new SidecarManager([]);
     const comp = createTextDeidComponent(vault, { sidecar: sm });
     const p: Payload = { kind: "text", text: "Иванов И.П. сдал отчёт", meta: {} };
     const out = await comp.beforeEgress!(p, ctx(events));

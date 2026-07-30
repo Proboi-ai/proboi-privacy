@@ -78,6 +78,40 @@ function ocrFixups(chars: string[]): Map<number, string> {
   return fix;
 }
 
+/**
+ * Позиции, ПЕРЕД которыми надо вставить пробел: слова слиплись без разделителя.
+ *
+ * «ЖуравлёваСемёнаМихайловича» — типовой артефакт извлечения текста из PDF: пробелы
+ * между словами не размечены вовсе, и ФИО приезжает одним словом. Ни правило, ни модель
+ * такого слова не знают, и человек уходит в облако открытым (поймано на договорах ЕИС 29.07).
+ *
+ * Признак узкий НАМЕРЕННО: внутри русского слова заглавной буквы не бывает, но бывает в
+ * названиях («СберБанк», «МосОблГаз»), а их разрезать незачем. Поэтому режем только длинные
+ * слова (≥14 знаков) минимум с ДВУМЯ переходами «строчная → заглавная»: столько границ подряд
+ * даёт склейка нескольких слов, а не фирменное написание.
+ */
+function gluedWordSplits(chars: string[]): Set<number> {
+  const out = new Set<number>();
+  let i = 0;
+  while (i < chars.length) {
+    if (!CYRILLIC.test(chars[i]!)) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < chars.length && CYRILLIC.test(chars[i]!)) i++;
+    if (i - start < 14) continue;
+    const boundaries: number[] = [];
+    for (let k = start + 1; k < i; k++) {
+      const prev = chars[k - 1]!;
+      const ch = chars[k]!;
+      if (prev === prev.toLowerCase() && ch !== ch.toLowerCase()) boundaries.push(k);
+    }
+    if (boundaries.length >= 2) for (const b of boundaries) out.add(b);
+  }
+  return out;
+}
+
 export interface Normalized {
   /** Текст для детекции. */
   text: string;
@@ -137,11 +171,21 @@ export function normalizeForDetection(source: string): Normalized {
   const map: number[] = [];
   const chars = [...source];
   const fixups = ocrFixups(chars);
+  const splits = gluedWordSplits(chars);
   let changed = false;
   let i = 0;
 
   while (i < chars.length) {
     const ch = chars[i]!;
+
+    // Слипшиеся слова разделяем пробелом. Пробел ВСТАВЛЯЕТСЯ, поэтому в карту позиций он
+    // идёт с индексом следующего символа: спан, начавшийся со слова справа, вернётся в
+    // исходные координаты без сдвига.
+    if (splits.has(i)) {
+      out.push(" ");
+      map.push(i);
+      changed = true;
+    }
 
     // Перенос по слогам: «Ков-\nалёв» → «Ковалёв». Дефис и перевод строки выбрасываем,
     // но только между буквами — иначе пострадают составные фамилии и списки через тире.

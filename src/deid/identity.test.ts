@@ -80,3 +80,38 @@ describe("privacy/deid/identity: выбор формы оригинала", () =
     expect(originalFor(empty, "[PER_99]", "текст [PER_99]", 6)).toBeUndefined();
   });
 });
+
+describe("privacy/deid/identity: возврат в ТОТ ЖЕ документ — дословно", () => {
+  /** Сейф, который помнит вхождения по порядку — как настоящий после обезличивания. */
+  const vaultWith = (occ: Array<{ cue: string; form: string }>): IdentityVault => ({
+    original: (t) => (t === "[PER_01]" ? occ[0]!.form : undefined),
+    entry: (t) => (t === "[PER_01]" ? { type: "PER", lemma: "Иванов И.П." } : undefined),
+    useFor: () => undefined,
+    occurrenceAt: (t, n) => (t === "[PER_01]" ? occ[n] : undefined),
+  });
+
+  it("две РАЗНЫЕ формы под одним ярлыком возвращаются каждая на своё место", () => {
+    // До 30.07 обе подставлялись из одной таблицы «слово → форма», и вторая приезжала
+    // в падеже первой: 40,2% договоров возвращались с другим окончанием, чем были.
+    const vault = vaultWith([
+      { cue: "", form: "Иванов И.П." },
+      { cue: "", form: "Иванову И.П." },
+    ]);
+    const text = "[PER_01] подписал. Направлено: [PER_01].";
+    expect(originalFor(vault, "[PER_01]", text, text.indexOf("["), 0)).toBe("Иванов И.П.");
+    expect(originalFor(vault, "[PER_01]", text, text.lastIndexOf("["), 1)).toBe("Иванову И.П.");
+  });
+
+  it("модель переписала окружение — дословная ступень выключается, работает прежняя", () => {
+    // Слово слева не то, что было при обезличивании → позиционной форме верить нельзя.
+    const vault = vaultWith([{ cue: "направлено", form: "Иванову И.П." }]);
+    const text = "С [PER_01] согласовано";
+    expect(originalFor(vault, "[PER_01]", text, text.indexOf("["), 0)).toBe("Ивановым И.П.");
+  });
+
+  it("номер вхождения не передан — поведение ровно прежнее", () => {
+    const vault = vaultWith([{ cue: "", form: "Иванову И.П." }]);
+    const text = "[PER_01] подписал";
+    expect(originalFor(vault, "[PER_01]", text, 0)).toBe("Иванов И.П.");
+  });
+});

@@ -18,6 +18,8 @@ import { detectEntities, resolveOverlaps, type DetectedEntity, type EntityType }
 import { normalizeForDetection, softenAllCaps, toSourceSpan } from "../deid/normalize";
 import { ENTITY_TYPES, entitiesForVertical, isVertical } from "../deid/entities";
 import { cueBefore, originalFor, surrogateForms } from "../deid/identity";
+import { spreadIdentities, spreadSurfaces } from "../deid/spread";
+import { filterNerPersons, refinePersons } from "../deid/precision";
 import { createLocalMorphAdapter, NOOP_MORPH, type MorphAdapter } from "../deid/morph";
 import {
   createPlaceholderOperator,
@@ -68,16 +70,21 @@ export function tokenizeEntities(
   // Дефолт — локальная морфология, а не «никакой»: без леммы падежи одного человека
   // разъезжаются по разным токенам. Явный `morph: "off"` по-прежнему отдаёт NOOP.
   const morph = opts?.morph ?? DEFAULT_MORPH;
+  // Замену идём с конца (иначе поедут индексы), а вхождения в сейф надо писать В ПОРЯДКЕ
+  // ДОКУМЕНТА и со словом-подсказкой из УЖЕ ОБЕЗЛИЧЕННОГО текста: возврат всегда смотрит на
+  // текст с ярлыками, и если подсказку взять из исходного, она не совпадёт всюду, где слева
+  // стоял другой скрытый кусок («Олеговна. Ирина» → «[PER_01]. [PER_01]»). Поэтому
+  // копим и записываем одним проходом после цикла.
+  const occurrences: Array<{ index: number; token: string; form: string; surface: string }> = [];
   for (const e of ordered) {
     if (e.confidence !== "high") lowConfidence++;
     // Морфология нужна ОБОИМ режимам: она даёт ключ личности, по которому все падежи одного
     // человека сходятся в один токен. Не отработала → ключом остаётся сама строка (как раньше).
     const analysis = opts?.analyses?.get(`${e.type}\0${e.raw}`) ?? morph?.analyze(e.raw, e.type);
     const lemma = analysis?.lemma;
-    const token = vault.tokenFor(e.type, e.raw, lemma);
-    // Чем эта форма отличается от канонической — единственное, что позволяет вернуть её
-    // обратно в нужном падеже, когда ярлык один на все падежи.
-    vault.recordUse(token, cueBefore(text, e.index), e.raw);
+    // Ключ личности задан вызывающим (протяжка знает, чья это часть) → берём его: «Алексей»
+    // обязан попасть в тот же ярлык, что «Гвоздев Алексей Петрович». Не задан → как было.
+    const token = vault.tokenFor(e.type, e.raw, e.identity ?? lemma);
     let surface = token;
     if (operator.mode === "surrogate") {
       // Суррогат сеется от леммы и ХРАНИТСЯ в именительном: один человек — одно вымышленное
@@ -114,7 +121,19 @@ export function tokenizeEntities(
         morph: analysis?.form as Record<string, string> | undefined,
       });
     }
+    occurrences.push({ index: e.index, token, form: e.raw, surface });
     out = out.slice(0, e.index) + surface + out.slice(e.index + e.raw.length);
+  }
+  // Позиция вхождения в ОБЕЗЛИЧЕННОМ тексте: замены шли с конца, поэтому всё, что левее,
+  // сместилось ровно на сумму приростов предыдущих замен. Слово-подсказку берём оттуда —
+  // именно эту строку увидит возврат.
+  occurrences.sort((a, b) => a.index - b.index);
+  let shift = 0;
+  for (const { index, token, form, surface } of occurrences) {
+    const cue = cueBefore(out, index + shift);
+    vault.recordUse(token, cue, form);
+    vault.recordOccurrence(token, cue, form);
+    shift += surface.length - form.length;
   }
   return { text: out, count: ents.length, lowConfidence, replacements };
 }
@@ -140,7 +159,16 @@ export function detokenizeText(text: string, vault: TokenVault): string {
   for (const { form, replacement } of surrogateForms(vault)) {
     out = out.split(form).join(replacement);
   }
-  return out.replace(TOKEN_RE, (m, offset: number) => originalFor(vault, m, out, offset) ?? m);
+  // Счётчик вхождений на токен — по нему возврат в НЕИЗМЕНЁННЫЙ документ ставит ту самую
+  // форму, что стояла на этом месте (deid/identity.ts, ступень 0). `replace` идёт слева
+  // направо, поэтому номер вхождения здесь и есть порядковый номер в документе.
+  const nthOf = new Map<string, number>();
+  return out.replace(TOKEN_RE, (m, offset: number) => {
+    const nth = nthOf.get(m) ?? 0;
+    const value = originalFor(vault, m, out, offset, nth);
+    if (value !== undefined) nthOf.set(m, nth + 1);
+    return value ?? m;
+  });
 }
 
 export function createTextDeidComponent(
@@ -204,6 +232,18 @@ export function createTextDeidComponent(
           "отраслевая GLiNER-модель недоступна; передача заблокирована",
         );
       }
+      // Тихая деградация Natasha. Сайдкар НАСТРОЕН, но не поднялся → конфигурация молча
+      // вырождается в голые правила и выдаёт правдоподобные цифры: на замере 29.07 это
+      // поймали только сверкой хэшей выгрузок. Различаем два состояния сайдкара:
+      // 'absent' — команда не задана, это осознанная поставка «клиент без сайдкара», работаем
+      // на правилах, как и раньше; 'down' — команда задана и процесс мёртв, то есть
+      // заявленная полнота НЕ обеспечивается, и егресс закрываем, как у GLiNER-зависимых.
+      if ((engine === "natasha" || engine === "both") && sidecar?.status() === "down") {
+        throw new PrivacyBlockedError(
+          "text-deid",
+          "сайдкар Natasha настроен, но не отвечает; правила выполнены локально, егресс заблокирован",
+        );
+      }
 
       // 2) upgrade: сайдкар Natasha, если поднят (PER/ORG), мерж поверх TS
       let usedSidecar = false;
@@ -240,6 +280,23 @@ export function createTextDeidComponent(
           "GLiNER не загрузилась; Natasha/правила выполнены локально, egress заблокирован",
         );
       }
+
+      // Фильтр ложных срабатываний NER — ДО протяжки: иначе «Заказчик», принятый моделью за
+      // человека, протянулся бы по всему документу и утащил точность ещё ниже.
+      if (usedSidecar) ents = filterNerPersons(p.text, ents);
+
+      // Решения арбитра (мемориальные имена не скрываем, роль перед инициалами срезаем) —
+      // тоже ДО протяжки и для находок ЛЮБОГО слоя, включая правила.
+      if (types.includes("PER")) ents = refinePersons(p.text, ents);
+
+      // Протяжка — ПОСЛЕ всех детекторов: подтвердить значение может и правило, и модель,
+      // а протянуть его по документу надо один раз и по общему списку.
+      // Сначала падежная (части подтверждённого ФИО), затем дословная (любое значение,
+      // закрытое в одном месте, закрывается везде) — вторая работает и по протянутым формам.
+      if (types.includes("PER")) {
+        ents = resolveOverlaps([...ents, ...spreadIdentities(p.text, ents)]);
+      }
+      ents = resolveOverlaps([...ents, ...spreadSurfaces(p.text, ents)]);
 
       const analyses = new Map<string, { lemma: string; form: import("../deid/morph").MorphForm }>();
       if (

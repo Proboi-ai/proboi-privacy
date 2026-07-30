@@ -186,6 +186,12 @@ export function restoreSpans(
     }
   }
 
+  // Сколько ярлыков ЭТОГО токена уже прошли — номер вхождения, по которому возврат в
+  // неизменённый документ идёт дословно (deid/identity.ts, ступень 0). Считаем здесь,
+  // потому что порядок обхода знает только обходчик; растим счётчик лишь на удачном
+  // разрешении, иначе неразобранный кандидат сбивал бы нумерацию.
+  const nthOf = new Map<string, number>();
+
   for (const match of text.matchAll(CANDIDATE_RE)) {
     const candidate = match[0];
     const start = match.index!;
@@ -194,8 +200,13 @@ export function restoreSpans(
 
     // Форма оригинала выбирается по МЕСТУ ярлыка (deid/identity.ts): ярлык один на человека,
     // а «направлено [PER_01]» обязано вернуться как «направлено Иванову И.П.».
-    const formAt = (token: string | undefined): string | undefined =>
-      token === undefined ? undefined : originalFor(vault, token, text, start);
+    const formAt = (token: string | undefined): string | undefined => {
+      if (token === undefined) return undefined;
+      const nth = nthOf.get(token) ?? 0;
+      const value = originalFor(vault, token, text, start, nth);
+      if (value !== undefined) nthOf.set(token, nth + 1);
+      return value;
+    };
 
     // Уровень 1 — точный. Работает всегда, в том числе при выключенных уровнях 2–3.
     const exact = formAt(candidate);

@@ -97,3 +97,19 @@ describe("privacy/deid/normalize: детекция на порченом тек�
     }
   });
 });
+
+describe("privacy/deid/normalize: слипшиеся слова", () => {
+  it("ФИО без пробелов разрезается и находится целиком", () => {
+    const source = "в лице ЖуравлёваСемёнаМихайловича, действующего";
+    expect(normalizeForDetection(source).text).toContain("Журавлёва Семёна Михайловича");
+    const found = detectEntities(source, ["PER"]);
+    // Значение возвращается в координатах ИСХОДНОГО текста — вставленный пробел офсеты не сбил.
+    expect(found.map((e) => e.raw)).toEqual(["ЖуравлёваСемёнаМихайловича"]);
+  });
+
+  it("фирменные написания не режутся: короткие и с одной границей", () => {
+    for (const source of ["ООО СберБанк", "МосОблГаз", "ПАО ГлавУпДК"]) {
+      expect(normalizeForDetection(source).text).toBe(source);
+    }
+  });
+});

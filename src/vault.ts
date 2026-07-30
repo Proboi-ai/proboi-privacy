@@ -24,10 +24,33 @@ function tokenNumber(token: string): number | null {
   return m ? parseInt(m[1]!, 10) : null;
 }
 
+/**
+ * Потолок вхождений одного токена, которые запоминаются ПОЗИЦИОННО. Нужен только чтобы
+ * запись сейфа не росла без предела на патологическом документе; настоящие люди столько
+ * раз не упоминаются, а частые ложные срабатывания снимает фильтр точности.
+ */
+const MAX_OCCURRENCES = 512;
+
+/** Одно вхождение оригинала: где стояло (слово слева) и КАК было написано. */
+export interface Occurrence {
+  cue: string;
+  form: string;
+}
+
 export class TokenVault {
   private byToken = new Map<string, VaultEntry>(); // token → локальная запись
   private byKey = new Map<string, string>(); // keyOf(type, raw) → token
   private counters = new Map<string, number>(); // type → последний номер
+  /**
+   * Вхождения В ПОРЯДКЕ ДОКУМЕНТА — только в памяти, в стор не пишутся.
+   *
+   * Это таблица «k-е вхождение [PER_01] было написано так-то», по которой возврат В ТОТ ЖЕ
+   * документ идёт ДОСЛОВНО, а не через морфологию (см. deid/identity.ts). Не персистим
+   * сознательно: возврат того же файла происходит внутри одного запроса, а после рестарта
+   * поведение просто откатывается к прежнему — по слову-подсказке. Заодно durable-стор не
+   * получает записи на каждое вхождение.
+   */
+  private occurrences = new Map<string, Occurrence[]>();
   private readonly store?: VaultStore;
   private readonly scope?: string;
   private readonly scopeSalt: Uint8Array;
@@ -114,6 +137,24 @@ export class TokenVault {
   }
 
   /**
+   * Запоминает ОЧЕРЕДНОЕ вхождение — в порядке документа. В отличие от `recordUse` пишет
+   * каждое, а не первое на слово-подсказку: именно это позволяет вернуть в тот же документ
+   * «Иванову И.П.» и «Ивановым И.П.» на свои места, а не одну форму на оба.
+   */
+  recordOccurrence(token: string, cue: string, form: string): void {
+    if (!this.byToken.has(token)) return;
+    const list = this.occurrences.get(token) ?? [];
+    if (list.length >= MAX_OCCURRENCES) return;
+    list.push({ cue, form });
+    this.occurrences.set(token, list);
+  }
+
+  /** k-е (с нуля) вхождение токена, каким его записали при обезличивании. */
+  occurrenceAt(token: string, nth: number): Occurrence | undefined {
+    return this.occurrences.get(token)?.[nth];
+  }
+
+  /**
    * ВСЕ известные написания оригиналов — канонические формы и все наблюдённые падежные.
    * Нужны fail-closed проверкам («в собранном файле не осталось ни одного оригинала»):
    * `original()` отдаёт лишь каноническую форму, и проверка по ней одной пропустила бы
@@ -125,6 +166,7 @@ export class TokenVault {
       out.add(e.raw);
       if (e.lemma) out.add(e.lemma);
       for (const form of Object.values(e.uses ?? {})) out.add(form);
+      for (const { form } of this.occurrences.get(e.token) ?? []) out.add(form);
     }
     return [...out];
   }
