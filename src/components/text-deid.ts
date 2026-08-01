@@ -19,7 +19,7 @@ import { normalizeForDetection, softenAllCaps, toSourceSpan } from "../deid/norm
 import { ENTITY_TYPES, entitiesForVertical, isVertical } from "../deid/entities";
 import { cueBefore, originalFor, surrogateForms } from "../deid/identity";
 import { spreadIdentities, spreadSurfaces } from "../deid/spread";
-import { filterNerPersons, refinePersons } from "../deid/precision";
+import { filterNerPersons, refinePersons, spanKey } from "../deid/precision";
 import { createLocalMorphAdapter, NOOP_MORPH, type MorphAdapter } from "../deid/morph";
 import {
   createPlaceholderOperator,
@@ -287,7 +287,8 @@ export function createTextDeidComponent(
 
       // Решения арбитра (мемориальные имена не скрываем, роль перед инициалами срезаем) —
       // тоже ДО протяжки и для находок ЛЮБОГО слоя, включая правила.
-      if (types.includes("PER")) ents = refinePersons(p.text, ents);
+      const suppressed = new Set<string>();
+      if (types.includes("PER")) ents = refinePersons(p.text, ents, suppressed);
 
       // Протяжка — ПОСЛЕ всех детекторов: подтвердить значение может и правило, и модель,
       // а протянуть его по документу надо один раз и по общему списку.
@@ -297,6 +298,14 @@ export function createTextDeidComponent(
         ents = resolveOverlaps([...ents, ...spreadIdentities(p.text, ents)]);
       }
       ents = resolveOverlaps([...ents, ...spreadSurfaces(p.text, ents)]);
+
+      // Протяжка НЕ ОТМЕНЯЕТ решение арбитра. Дословная протяжка закрывает значение по всему
+      // документу, и до этой строки она возвращала обратно ровно то, что правила только что
+      // сняли: замер 01.08 — 26 ошибок «автор учебника» из 42 приезжали именно так, с другого
+      // вхождения того же имени. Снимаем только те ВХОЖДЕНИЯ, по которым решение уже принято;
+      // остальные вхождения того же имени протяжка закрывает как раньше, поэтому однофамилец в
+      // подписном блоке остаётся скрытым.
+      if (suppressed.size > 0) ents = ents.filter((e) => !suppressed.has(spanKey(e)));
 
       const analyses = new Map<string, { lemma: string; form: import("../deid/morph").MorphForm }>();
       if (
