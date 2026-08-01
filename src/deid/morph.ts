@@ -81,7 +81,7 @@ export function createLocalMorphAdapter(): MorphAdapter {
     inflect(value, form, type) {
       try {
         if (type === "PER") return inflectPerson(value, form);
-        if (type === "FIELD" || type === "ADDR") {
+        if (type === "GEO_NAME" || type === "ADDR") {
           if (form.case === "gen") return cityFrom(value);
           if (form.case === "dat" || form.case === "acc") return cityTo(value);
           if (form.case === "loc") return cityIn(value);

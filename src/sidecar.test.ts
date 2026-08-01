@@ -62,7 +62,7 @@ describe("SidecarManager: живой мок-сайдкар (JSON-newline RPC)", 
     sm = new SidecarManager(["bun", MOCK]);
     await sm.start();
     const entities = await sm.deidGliner("участок Тайга", "geo");
-    expect(entities[0]).toMatchObject({ type: "FIELD", raw: "Тайга" });
+    expect(entities[0]).toMatchObject({ type: "GEO_NAME", raw: "Тайга" });
   });
 
   it("после stop() → down, новые запросы отклоняются", async () => {

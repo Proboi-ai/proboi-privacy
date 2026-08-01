@@ -14,7 +14,7 @@ export type EntityType =
   | "COORD"
   | "LICENSE_SUBSOIL"
   | "WELL"
-  | "FIELD"
+  | "GEO_NAME"
   | "CADASTRE"
   | "CASE"
   | "OGRN"
@@ -67,7 +67,7 @@ export const ENTITY_REGISTRY: readonly EntityDef[] = [
   entity("COORD", "Координаты", ["geo"], "coords"),
   entity("LICENSE_SUBSOIL", "Лицензия на недропользование", ["geo"], "regex", "medium"),
   entity("WELL", "Номер скважины", ["geo"], "regex", "medium"),
-  entity("FIELD", "Месторождение", ["geo"], "ner", "medium"),
+  entity("GEO_NAME", "Географическое название", ["geo"], "ner", "medium"),
   entity("CADASTRE", "Кадастровый номер", ["geo", "legal"], "regex", "medium"),
   entity("CASE", "Номер дела", ["legal"], "regex"),
   entity("OGRN", "ОГРН", ["legal"], "checksum"),

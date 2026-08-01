@@ -64,7 +64,7 @@ for await (const chunk of Bun.stdin.stream()) {
         ok: true,
         result: {
           entities: text
-            ? [{ type: "FIELD", raw, index: text.length - raw.length, confidence: "high" }]
+            ? [{ type: "GEO_NAME", raw, index: text.length - raw.length, confidence: "high" }]
             : [],
         },
       });

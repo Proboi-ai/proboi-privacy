@@ -65,9 +65,9 @@ describe("privacy/text-deid: upgrade сайдкаром (опциональны�
     const p: Payload = { kind: "text", text: "участок Тайга", meta: {} };
     const out = await comp.beforeEgress!(
       p,
-      ctx([], { nerEngine: "gliner", vertical: "geo", entities: ["FIELD"] }),
+      ctx([], { nerEngine: "gliner", vertical: "geo", entities: ["GEO_NAME"] }),
     );
-    expect(out.text).toBe("участок [FIELD_01]");
+    expect(out.text).toBe("участок [GEO_NAME_01]");
   });
 
   it("GEO-гибрид: NER закрывает название, правила — лицензию и скважину", async () => {
@@ -85,7 +85,7 @@ describe("privacy/text-deid: upgrade сайдкаром (опциональны�
     );
     expect(out.text).toContain("[LICENSE_SUBSOIL_01]");
     expect(out.text).toContain("[WELL_01]");
-    expect(out.text).toContain("[FIELD_01]");
+    expect(out.text).toContain("[GEO_NAME_01]");
     expect(out.text).not.toMatch(/ЯКУ|Р-812|Тайга/u);
   });
 
