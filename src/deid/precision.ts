@@ -362,6 +362,100 @@ const BIBLIO_SIGNATORY_ANYWHERE =
   /(?:в лице|действующ[а-яё]*|подпис[а-яё]*|расшифровка|должность|главн[а-яё]+ врач|директор[а-яё]*|руководител[а-яё]*|заведующ[а-яё]*|М\.?\s?П\.)/iu;
 
 /**
+ * ДОКУМЕНТ ЦЕЛИКОМ — ЭТО ПОСТАВКА УЧЕБНИКОВ.
+ *
+ * ЗАЧЕМ ПРИЗНАК ПО ДОКУМЕНТУ, А НЕ ПО ОКНУ. Разбор 02.08 тринадцати ошибок, подтверждённых
+ * владельцем вручную: восемь — авторы учебников в договорах, где вёрстка таблицы разорвана и
+ * слова из соседних колонок стоят вперемешку:
+ *
+ *     Мединский авторского коллектива), (руководитель ⟦Никифоров Ю.А.⟧, авторского Никонов В.А.
+ *
+ * Окном это не лечится ни при каком размере: подсказка и фамилия перемешаны случайно, и
+ * расширение окна тянет за собой чужие строки быстрее, чем ловит свои. Признак снимается со
+ * ВСЕГО документа: если договор целиком про учебники, то фамилия внутри товарной строки —
+ * автор, как бы её ни разбросала вёрстка.
+ *
+ * ПОЧЕМУ ПОРОГ ПО СЛОВУ «УЧЕБНИК», А НЕ ПО ISBN. Владелец 02.08 одобрил правило со строгим
+ * порогом и предложил считать ISBN. Замер на самих документах показал, что так нельзя: ISBN
+ * не встречается НИ РАЗУ ни в одном из восьми — в спецификации ЕИС его просто не печатают.
+ * Живой сигнал другой: слово «учебник» стоит 11, 38 и 66 раз. Отсюда порог 10 — на 400
+ * договорах сертификационного среза он поднимается ровно на 4 документах (1%) и накрывает все
+ * три документа-виновника. ISBN и «авторский коллектив» оставлены запасными входами: они
+ * ничего не стоят и закрывают договор, где учебники названы иначе.
+ *
+ * СТРАХОВКИ НЕ ТРОНУТЫ. Признак снимает только требование подсказки РЯДОМ. Все три вето
+ * подписанта — вплотную, в 120 знаках слева и по фамилии на весь документ — работают как
+ * работали, и внутри этих четырёх документов лежат 12 подтверждённых владельцем живых людей,
+ * которых они обязаны удержать.
+ */
+const BIBLIO_DOC_TEXTBOOK = /учебник[а-яё]*/giu;
+const BIBLIO_DOC_ISBN = /ISBN|978-\d[\d-]{6,}/gu;
+const BIBLIO_DOC_TEAM = /авторск[а-яё]+\s+коллектив[а-яё]*/iu;
+const BIBLIO_DOC_TEXTBOOK_MIN = 10;
+const BIBLIO_DOC_ISBN_MIN = 3;
+
+function countMatches(text: string, re: RegExp): number {
+  return (text.match(re) ?? []).length;
+}
+
+function isBibliographicDocument(text: string): boolean {
+  const textbooks = countMatches(text, BIBLIO_DOC_TEXTBOOK);
+  if (textbooks >= BIBLIO_DOC_TEXTBOOK_MIN) return true;
+  if (countMatches(text, BIBLIO_DOC_ISBN) >= BIBLIO_DOC_ISBN_MIN) return true;
+  return textbooks >= 1 && BIBLIO_DOC_TEAM.test(text);
+}
+
+/**
+ * «РУКОВОДИТЕЛЬ АВТОРСКОГО КОЛЛЕКТИВА» — ЭТО ВЫХОДНЫЕ ДАННЫЕ КНИГИ, А НЕ ПОДПИСАНТ.
+ *
+ * Три ошибки из восьми держались не на подсказке, а на вето: в разорванной таблице слово
+ * «руководитель» из соседней колонки оказывалось прямо перед фамилией автора, и подписное вето
+ * честно срабатывало. Хуже того, фамилия попадала в список подписантов документа и защищалась
+ * потом ВЕЗДЕ — то самое доминошное правило, которое 01.08 спасало живого директора издательства.
+ *
+ * Поэтому в БИБЛИОГРАФИЧЕСКОМ документе слово «руководител*» перестаёт быть подсказкой, но
+ * только если рядом стоит «авторск». Замена посимвольная, пробелами той же длины: координаты
+ * находок обязаны остаться прежними, иначе поедут все замены в документе.
+ *
+ * Настоящего подписанта это не задевает. Директор издательства подписывает договор через «в
+ * лице», «подпись», «М.П.» и штамп ЭЦП — ни одна из этих подсказок здесь не трогается, а
+ * «руководитель» без слова «авторск» рядом остаётся подсказкой, как и был.
+ */
+const BOOK_CREDIT_LEAD = /руководител[а-яё]*/giu;
+const BOOK_CREDIT_NEAR = /авторск[а-яё]*/iu;
+/**
+ * Окно широкое (200), но меряется ПОСЛЕ схлопывания отступов вёрстки, и это принципиально.
+ *
+ * Замер 02.08: в живом тексте между «авторского коллектива» и «руководитель» лежит 90 и 119
+ * знаков — но почти все они пробелы, которыми таблица добита до края колонки:
+ *
+ *     'Мединский                                авторского коллектива),\n
+ *                                                      (руководитель  …'
+ *
+ * По словам это соседи, по знакам — далеко. Считать сырые знаки значит либо не доставать
+ * соседнее слово, либо, при большом окне, накрыть пол-страницы чужого текста. Схлопывание
+ * отступов даёт честную меру: 200 знаков забитой пробелами таблицы — это десяток слов.
+ */
+const LAYOUT_PADDING = /[  \t ]{2,}/gu;
+const BOOK_CREDIT_WINDOW = 200;
+
+function maskBookCredits(text: string): string {
+  const out = text.split("");
+  for (const m of text.matchAll(BOOK_CREDIT_LEAD)) {
+    const around = text
+      .slice(
+        Math.max(0, m.index - BOOK_CREDIT_WINDOW),
+        Math.min(text.length, m.index + m[0].length + BOOK_CREDIT_WINDOW),
+      )
+      .replace(LAYOUT_PADDING, " ");
+    if (!BOOK_CREDIT_NEAR.test(around)) continue;
+    // Замена посимвольная и равной длины: координаты всех находок обязаны остаться прежними.
+    for (let i = m.index; i < m.index + m[0].length; i++) out[i] = " ";
+  }
+  return out.join("");
+}
+
+/**
  * ПОДПИСАНТ ДОКУМЕНТА НЕ БЫВАЕТ АВТОРОМ — по всему документу, а не только у своего вхождения.
  *
  * Решение владельца 01.08 сформулировано именно так: исключение для авторов «не распространяется
@@ -382,15 +476,25 @@ function isSignatoryInDoc(raw: string, signatorySurnames: ReadonlySet<string>): 
   return wordsOf(raw).some((w) => signatorySurnames.has(w.toLowerCase()));
 }
 
-function isBibliographicMention(raw: string, text: string, index: number): boolean {
-  if (hasSignatoryCue(text, index)) return false;
+function isBibliographicMention(
+  raw: string,
+  text: string,
+  index: number,
+  cueText: string,
+  biblioDoc: boolean,
+): boolean {
+  // Вето ищутся в `cueText`: он совпадает с документом знак в знак, но в
+  // библиографическом договоре в нём затёрт «руководитель авторского коллектива».
+  if (hasSignatoryCue(cueText, index)) return false;
   if (
     BIBLIO_SIGNATORY_ANYWHERE.test(
-      text.slice(Math.max(0, index - BIBLIO_SIGNATORY_WINDOW), index),
+      cueText.slice(Math.max(0, index - BIBLIO_SIGNATORY_WINDOW), index),
     )
   ) {
     return false;
   }
+  // Признак по документу заменяет подсказку рядом — и только её.
+  if (biblioDoc) return true;
   const window = text.slice(
     Math.max(0, index - BIBLIO_WINDOW),
     Math.min(text.length, index + raw.length + BIBLIO_WINDOW),
@@ -645,6 +749,10 @@ export function refinePersons(
   ents: readonly DetectedEntity[],
   suppressed?: Set<string>,
 ): DetectedEntity[] {
+  // Признак снимается с документа ОДИН раз: он не зависит ни от находки, ни от места.
+  const biblioDoc = isBibliographicDocument(text);
+  const cueText = biblioDoc ? maskBookCredits(text) : text;
+
   const memorial = new Set<string>();
   const signatory = new Set<string>();
   const signatorySurnames = new Set<string>();
@@ -652,8 +760,26 @@ export function refinePersons(
     if (e.type !== "PER") continue;
     const key = valueKey(e.raw);
     if (isMemorialMention(text, e.index)) memorial.add(key);
-    if (hasSignatoryCue(text, e.index)) {
-      signatory.add(key);
+    // Список подписантов документа строится по `cueText` намеренно. Иначе автор, перед
+    // которым вёрстка уронила слово «руководитель», попадал бы в подписанты и защищался
+    // потом во всех своих вхождениях — правило не сработало бы вовсе.
+    if (hasSignatoryCue(cueText, e.index)) signatory.add(key);
+    // ФАМИЛИИ ПОДПИСАНТОВ СОБИРАЕМ ПО ШИРОКОЙ ПОДСКАЗКЕ, а не по вплотную стоящей.
+    //
+    // Замер 02.08 после введения документного признака: правило открыло живого человека —
+    // «Директор по операционной поддержке продаж ______ ⟦О.В. Паршутина⟧ м.п.». Узкое вето
+    // требует должность ВПЛОТНУЮ, а тут за словом «Директор» идёт трёхсловный хвост, и
+    // фамилия в список подписантов не попадала. Дальше домино, описанное 01.08: правило
+    // авторов снимало её в товарной строке, снятое вхождение запрещало протяжке закрыть
+    // фамилию, и она открывалась в подписи.
+    //
+    // Расширение безопасно по построению: этот список читает ТОЛЬКО правило авторов и
+    // только для того, чтобы его ОТМЕНИТЬ. Раскрыть он ничего не может, самое худшее —
+    // оставит скрытым автора, у которого в 120 знаках слева стоит слово «директор».
+    const wideCue = BIBLIO_SIGNATORY_ANYWHERE.test(
+      cueText.slice(Math.max(0, e.index - BIBLIO_SIGNATORY_WINDOW), e.index),
+    );
+    if (wideCue || hasSignatoryCue(cueText, e.index)) {
       for (const w of wordsOf(e.raw)) signatorySurnames.add(w.toLowerCase());
     }
   }
@@ -680,7 +806,8 @@ export function refinePersons(
       isStreetAddress(e.raw, text, e.index) ||
       isRegistryAddress(e.raw, text, e.index) ||
       isForeignLegalForm(e.raw, text, e.index) ||
-      (isBibliographicMention(e.raw, text, e.index) && !isSignatoryInDoc(e.raw, signatorySurnames))
+      (isBibliographicMention(e.raw, text, e.index, cueText, biblioDoc) &&
+        !isSignatoryInDoc(e.raw, signatorySurnames))
     ) {
       drop(e);
       continue;
