@@ -381,3 +381,27 @@ describe("privacy/deid/precision: мелкие дефекты разметки �
     expect(one(text, "Ромашкина")).toHaveLength(1);
   });
 });
+
+// Замер полноты 02.08: оба оставшихся пропуска — имя, разорванное переносом строки.
+describe("privacy/deid/precision: имя, разорванное переносом строки", () => {
+  const per = (raw: string, index: number): DetectedEntity => ({
+    type: "PER", raw, index, confidence: "high", source: "ner",
+  });
+  const expand = (text: string, raw: string): string =>
+    refinePersons(text, [per(raw, text.indexOf(raw))])[0]?.raw ?? "(находка потеряна)";
+
+  it("фамилия и имя на прошлой строке дотягиваются к отчеству", () => {
+    const text = "в лице генерального директора Ромашкян Арпине\nПавловны, действующего на основании";
+    expect(expand(text, "Павловны")).toBe("Ромашкян Арпине\nПавловны");
+  });
+
+  it("то же для обычного русского имени", () => {
+    const text = "в лице Директора Ромашкин Ильи\nЮрьевича , действующего на основании Устава";
+    expect(expand(text, "Юрьевича")).toBe("Ромашкин Ильи\nЮрьевича");
+  });
+
+  it("дальше двух слов растяжка не идёт", () => {
+    const text = "Приложение Первое Второе Третье\nПавловны";
+    expect(expand(text, "Павловны")).toBe("Второе Третье\nПавловны");
+  });
+});
