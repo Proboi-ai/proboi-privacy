@@ -36,7 +36,18 @@ const HOMOGLYPHS: Readonly<Record<string, string>> = {
 const DIGIT_LOOKALIKES: Readonly<Record<string, string>> = { "0": "о", "3": "з", "6": "б", "9": "д" };
 
 const CYRILLIC = /[А-Яа-яЁё]/u;
+const LATIN = /[A-Za-z]/u;
 const WORD_CHAR = /[\p{L}\p{Nd}]/u;
+/**
+ * Длина пробега латиницы, начиная с которой это настоящая латиница, а не порча OCR.
+ *
+ * OCR подменяет буквы поодиночке: в «Koвaлёв» латинские «K» и «a» стоят порознь среди
+ * кириллицы. Три латинские буквы подряд так не появляются — это слипшееся английское
+ * слово, чаще всего почта («Кирилловнаvetrova@…», договор ЕИС). Отличать обязательно:
+ * подмена внутри такого пробега стирает границу слова, и стоящее перед ним отчество
+ * перестаёт быть отдельным словом — человек уходит наружу открытым.
+ */
+const LATIN_RUN_IS_REAL = 3;
 /** Пробелы, которые считаем разделителем: обычный, неразрывный и узкий неразрывный. */
 const SPACES = new Set([" ", "\u00a0", "\u202f"]);
 
@@ -48,6 +59,22 @@ const SPACES = new Set([" ", "\u00a0", "\u202f"]);
  * в обе стороны: чинить смесь алфавитов внутри слова, где есть настоящая кириллица, и не
  * трогать честную латиницу («John Smith», «coop»), где кириллицы нет ни одной буквы.
  */
+/** Индексы внутри слова, занятые пробегом латиницы длиной от `LATIN_RUN_IS_REAL`. */
+function realLatinPositions(word: string[]): Set<number> {
+  const out = new Set<number>();
+  let i = 0;
+  while (i < word.length) {
+    if (!LATIN.test(word[i]!)) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < word.length && LATIN.test(word[i]!)) i++;
+    if (i - start >= LATIN_RUN_IS_REAL) for (let k = start; k < i; k++) out.add(k);
+  }
+  return out;
+}
+
 function ocrFixups(chars: string[]): Map<number, string> {
   const fix = new Map<number, string>();
   let i = 0;
@@ -61,7 +88,9 @@ function ocrFixups(chars: string[]): Map<number, string> {
     const word = chars.slice(start, i);
     const cyrillic = word.filter((c) => CYRILLIC.test(c)).length;
     if (cyrillic === 0) continue; // слово целиком латинское — это не порча, а иностранное слово
+    const realLatin = realLatinPositions(word);
     for (const [k, ch] of word.entries()) {
+      if (realLatin.has(k)) continue; // внутри настоящего латинского слова чинить нечего
       const homoglyph = HOMOGLYPHS[ch];
       if (homoglyph !== undefined) {
         fix.set(start + k, homoglyph);
@@ -108,6 +137,50 @@ function gluedWordSplits(chars: string[]): Set<number> {
       if (prev === prev.toLowerCase() && ch !== ch.toLowerCase()) boundaries.push(k);
     }
     if (boundaries.length >= 2) for (const b of boundaries) out.add(b);
+  }
+  return out;
+}
+
+/**
+ * Позиции стыка «кириллица ↔ латиница» внутри одного слова: там пропал разделитель.
+ *
+ * Пропуск пробела перед латиницей — типовой артефакт извлечения текста: почта приклеивается
+ * к предыдущему слову («Кирилловнаvetrova@example.ru»), и отчество перестаёт быть отдельным
+ * словом. Правилам и модели такое слово незнакомо, человек уходит наружу открытым.
+ *
+ * Порог в три буквы с ОБЕИХ сторон намеренный: он отделяет пропавший пробел от порчи OCR,
+ * где латинские двойники стоят поодиночке среди кириллицы и их надо чинить, а не резать.
+ */
+function scriptSplits(chars: string[]): Set<number> {
+  const out = new Set<number>();
+  let i = 0;
+  while (i < chars.length) {
+    if (!WORD_CHAR.test(chars[i]!)) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < chars.length && WORD_CHAR.test(chars[i]!)) i++;
+    let runStart = start;
+    for (let k = start + 1; k <= i; k++) {
+      const prev = chars[k - 1]!;
+      const ch = k < i ? chars[k]! : "";
+      const flip =
+        k === i ||
+        (CYRILLIC.test(prev) && LATIN.test(ch)) ||
+        (LATIN.test(prev) && CYRILLIC.test(ch));
+      if (!flip) continue;
+      const isLast = k === i;
+      const runLong = k - runStart >= LATIN_RUN_IS_REAL;
+      if (!isLast && runLong) {
+        // Резать можно, только если и справа полноценный пробег, а не одинокий двойник.
+        let j = k;
+        const sameScript = LATIN.test(ch) ? LATIN : CYRILLIC;
+        while (j < i && sameScript.test(chars[j]!)) j++;
+        if (j - k >= LATIN_RUN_IS_REAL) out.add(k);
+      }
+      runStart = k;
+    }
   }
   return out;
 }
@@ -171,7 +244,7 @@ export function normalizeForDetection(source: string): Normalized {
   const map: number[] = [];
   const chars = [...source];
   const fixups = ocrFixups(chars);
-  const splits = gluedWordSplits(chars);
+  const splits = new Set([...gluedWordSplits(chars), ...scriptSplits(chars)]);
   let changed = false;
   let i = 0;
 

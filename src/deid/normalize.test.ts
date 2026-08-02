@@ -112,4 +112,23 @@ describe("privacy/deid/normalize: слипшиеся слова", () => {
       expect(normalizeForDetection(source).text).toBe(source);
     }
   });
+
+  it("почта, приклеенная к отчеству, не съедает границу слова", () => {
+    // Утечка со среза 5000 договоров: пропал пробел перед почтой, латинские буквы
+    // почты ушли в кириллицу по правилу OCR, и отчество перестало быть отдельным словом.
+    const source = "Заказчик: Ветрова Полина Кирилловнаvetrova@example.ru, тел. 8-900-000-00-00";
+    expect(normalizeForDetection(source).text).toContain("Кирилловна vetrova@example.ru");
+    const found = detectEntities(source, ["PER"]);
+    expect(found.map((e) => e.raw).join(" ")).toContain("Кирилловна");
+    // Координаты остаются исходными: вставленный пробел офсеты не сбивает.
+    for (const hit of found) {
+      expect(source.slice(hit.index, hit.index + hit.raw.length)).toBe(hit.raw);
+    }
+  });
+
+  it("одиночные латинские двойники по-прежнему чинятся, а не режутся", () => {
+    // Порча OCR: буквы стоят поодиночке среди кириллицы — это то же слово, не два.
+    expect(normalizeForDetection("Koвaлёв Иван Петрович").text).toBe("Ковалёв Иван Петрович");
+    expect(normalizeForDetection("Иванoв Иван Ивaнович").text).toBe("Иванов Иван Иванович");
+  });
 });
