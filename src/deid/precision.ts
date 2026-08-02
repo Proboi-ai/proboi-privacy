@@ -71,6 +71,14 @@ const CUE_WINDOW = 120;
 const PATRONYMIC_SUFFIX =
   /(?:вича|вичу|виче|вичем|вной|ична|ичны|ичну|ичной|вна|вны|вне|вну|вич)$/u;
 
+/**
+ * Мужские отчества БЕЗ «в» — закрытым списком, как и в детекторе: голое «-ич» на заглавном
+ * слове ловит «Москвич» и «Калач». Нужны здесь для растяжки границы влево: если находкой
+ * оказалось одно отчество «Ильича», слева от него стоит остаток того же ФИО.
+ */
+const PATRONYMIC_ICH =
+  /^(?:ильич|кузьмич|фомич|лукич|никитич|саввич|прокофьич|ерофеич|игнатьич|гаврилыч)(?:ем|а|у|е)?$/u;
+
 /** Фамильные суффиксы, тоже во всех падежах. Длина слова ≥4 — иначе ловится половина языка. */
 const SURNAME_SUFFIX =
   /(?:ского|скому|скими|ским|ском|ская|ской|скую|скою|ские|ских|цкого|цкому|цкими|цким|цком|цкая|цкой|цкую|цкою|ский|цкий|енко|швили|дзе|ых|их|ко|ук|юк|ян|овой|овым|ову|ове|ова|евой|евым|еву|еве|ева|ёвой|ёвым|ёву|ёве|ёва|иной|иным|ину|ине|ина|ыной|ыным|ыну|ыне|ына|ов|ев|ёв|ин|ын|ая)$/u;
@@ -122,7 +130,7 @@ function isNomenclature(word: string): boolean {
 /** Только суффикс, БЕЗ веты номенклатуры: «Заказчика» — нет, «Директоров» — да. */
 function hasNameSuffix(word: string): boolean {
   const lower = word.toLowerCase();
-  if (PATRONYMIC_SUFFIX.test(lower)) return true;
+  if (PATRONYMIC_SUFFIX.test(lower) || PATRONYMIC_ICH.test(lower)) return true;
   return word.length >= 4 && SURNAME_SUFFIX.test(lower);
 }
 
@@ -870,7 +878,8 @@ function expandLeft(e: DetectedEntity, text: string): DetectedEntity {
   const before = text.slice(Math.max(0, e.index - EXPAND_LOOKBACK), e.index);
   const value = e.raw.trim();
   const isPatronymic =
-    PATRONYMIC_VALUE.test(value) && PATRONYMIC_SUFFIX.test(value.toLowerCase());
+    PATRONYMIC_VALUE.test(value) &&
+    (PATRONYMIC_SUFFIX.test(value.toLowerCase()) || PATRONYMIC_ICH.test(value.toLowerCase()));
   const probe = isPatronymic
     ? (NAME_WORDS_BEFORE.exec(before) ?? INITIALS_BEFORE.exec(before))
     : INITIALS_BEFORE.exec(before);
