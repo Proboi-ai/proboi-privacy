@@ -71,7 +71,7 @@ describe("privacy/deid/precision: мусорные спаны NER", () => {
   });
 });
 
-// Решения арбитра от 31.07 (см. training/expanded/VERIFIER-STAGE1-2026-07-31.md).
+// Решения арбитра от 31.07 (внутренний отчёт проверяльщика, этап 1).
 describe("privacy/deid/precision: решения арбитра о мемориальных именах и роли", () => {
   const per = (raw: string, index: number): DetectedEntity => ({
     type: "PER",
