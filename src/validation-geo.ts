@@ -1,0 +1,162 @@
+/**
+ * Замер ПОЛНОТЫ гео-детекторов «сетью-подсказкой» — без внешних судей.
+ *
+ * Зачем так. Полноту по геологии не мерили ни разу (замер 01.08 мерил только
+ * точность), а тексты клиентских отчётов машину клиента не покидают — внешним
+ * LLM-судьям их отдавать нельзя. Поэтому эталон строится ЛОКАЛЬНО: независимый
+ * набор нарочно грубых, жадных паттернов («сеть») размечает всё, что ПОХОЖЕ на
+ * гео-сущность. Дальше текст прогоняется через боевой детектор с маскированием,
+ * и сеть запускается по ИТОГОВОМУ тексту: всё, что она нашла в обезличенном
+ * тексте — кандидат в пропуск (значение осталось открытым).
+ *
+ * Что значит цифра. Сеть шире боевого детектора и ловит в том числе то, что
+ * маскировать не надо. Поэтому «полнота относительно сети» — НИЖНЯЯ оценка:
+ * реальная полнота не хуже неё, а каждый кандидат в пропуск требует ручного
+ * разбора (примеры остаются на машине — наружу только счётчики).
+ *
+ * Тот же приём, что замер не-именных ПДн 03.08 («телефон с подсказкой»):
+ * методика уже показала себя — телефоны 66,5%→99,18% после четырёх правок.
+ *
+ * ВАЖНО: паттерны сети написаны НЕЗАВИСИМО от src/deid/detect.ts и нарочно
+ * грубее. Не «улучшать» их до боевых правил — замер станет циркулярным
+ * (детектор будет мериться сам о себя).
+ */
+
+import { detectEntities, type DetectedEntity, type EntityType } from "./deid/detect";
+import { entitiesForVertical } from "./deid/entities";
+
+/** Гео-типы, полноту которых меряем. */
+export const GEO_RECALL_TYPES = ["WELL", "COORD", "LICENSE_SUBSOIL", "GEO_NAME", "CADASTRE"] as const;
+export type GeoRecallType = (typeof GEO_RECALL_TYPES)[number];
+
+/**
+ * Сеть-подсказка: жадные паттерны по типам. Флаг g обязателен.
+ * Формы взяты из замера 01.08 на 170 реальных отчётах EC: доминирующая запись
+ * координат — «56°30'с.ш. 108°45'в.д.», скважины — «скв. №4» и «скважина 33-Р»,
+ * лицензии — «ЯКУ 12345 НР», названия — «Марковское месторождение», «р. Лена».
+ */
+export const GEO_RECALL_NET: Record<GeoRecallType, RegExp[]> = {
+  WELL: [
+    // «скважина/скв.» + хоть какой-то идентификатор в пределах 12 знаков
+    /скв(?:ажин[а-яё]*|\.)\s*(?:№\s*)?[\w\dА-ЯЁа-яё][\w\dА-ЯЁа-яё\-/]{0,11}/giu,
+  ],
+  COORD: [
+    // градусы-минуты(-секунды) в любой записи
+    /\d{1,3}\s?[°º]\s?\d{1,2}\s?[′'’]\s?(?:\d{1,2}(?:[.,]\d+)?\s?[″"”])?/gu,
+    // русские полушария — сами по себе якорь: рядом всегда координата
+    /[сСюЮ]\.\s?ш\.|[вВзЗ]\.\s?д\./gu,
+    // десятичная пара с 4+ знаками после запятой
+    /-?\d{1,3}[.,]\d{4,}\s*[,;]\s*-?\d{1,3}[.,]\d{4,}/gu,
+    // СК-42/МСК: X=/Y= и кириллические Х=/У=
+    /[XxYyХхУу]\s*=\s*-?\d[\d\s.,]{4,}/gu,
+  ],
+  LICENSE_SUBSOIL: [
+    // серия-номер-вид: ЯКУ 12345 НР
+    /[А-ЯЁ]{3}\s?\d{5}\s?[А-ЯЁ]{2}\b/gu,
+    // слово «лицензия» + буквенно-цифровой номер рядом
+    /лицензи[а-яё]*\s+(?:№\s*)?[А-ЯЁ]{2,4}[\s-]?\d{3,6}/giu,
+  ],
+  GEO_NAME: [
+    // ключ-слово + Имя: «месторождение Хххх», «участок Хххх», «площадь Хххх»
+    /(?:месторожден[а-яё]*|участ(?:ок|ка|ке|ку|ком)|проявлен[а-яё]*|площад[а-яё]*)\s+[«"]?[А-ЯЁ][\w\dА-ЯЁа-яё-]+/gu,
+    // Имя-прилагательное + ключ-слово: «Марковское месторождение»
+    /[А-ЯЁ][а-яё-]+(?:ое|ая|ий|ый|его|ого|ской|ского)\s+(?:месторожден[а-яё]*|площад[а-яё]*|участк[а-яё]*)/gu,
+    // реки: решение владельца 01.08 — маскируем. \b не годится: ASCII-граница
+    // не видит кириллицу, поэтому lookbehind на не-букву.
+    /(?<=^|[^А-ЯЁа-яё])(?:р\.\s?[А-ЯЁ][а-яё-]+|рек[аиеу]\s+[А-ЯЁ][а-яё-]+)/gu,
+  ],
+  CADASTRE: [/\b\d{2}:\d{2}:\d{6,7}:\d{1,5}\b/gu],
+};
+
+export interface GeoRecallLeak {
+  type: GeoRecallType;
+  /** Что осталось открытым в итоговом тексте. НЕ отдавать наружу — только локальный разбор. */
+  value: string;
+  /** Контекст вокруг пропуска в обезличенном тексте. Тоже только локально. */
+  context: string;
+}
+
+export interface GeoRecallPerType {
+  /** Находок сети в исходном тексте. */
+  вИсходном: number;
+  /** Находок сети в обезличенном тексте = кандидаты в пропуск. */
+  осталосьПослеМаски: number;
+  /** 1 − осталось/вИсходном; null, если сеть в исходном ничего не нашла. */
+  полнотаPct: number | null;
+}
+
+export interface GeoRecallReport {
+  документов: number;
+  типы: Record<GeoRecallType, GeoRecallPerType>;
+  /** Примеры пропусков (cap задаёт вызывающий). Наружу не отдавать. */
+  примерыПропусков: GeoRecallLeak[];
+  методика: string;
+}
+
+function netMatches(type: GeoRecallType, text: string): { value: string; index: number }[] {
+  const out: { value: string; index: number }[] = [];
+  for (const re of GEO_RECALL_NET[type]) {
+    re.lastIndex = 0;
+    for (const m of text.matchAll(re)) {
+      out.push({ value: m[0], index: m.index ?? 0 });
+    }
+  }
+  return out;
+}
+
+/** Продуктовое маскирование для замера: спаны детектора → [TYPE]. */
+export function maskDetected(text: string, entities: DetectedEntity[]): string {
+  const sorted = [...entities].sort((a, b) => b.index - a.index);
+  let out = text;
+  for (const e of sorted) {
+    out = out.slice(0, e.index) + `[${e.type}]` + out.slice(e.index + e.raw.length);
+  }
+  return out;
+}
+
+/**
+ * Замер полноты на наборе документов. types по умолчанию — вертикаль geo,
+ * как в продукте.
+ */
+export function measureGeoRecall(
+  docs: { id: string; text: string }[],
+  opts: { types?: EntityType[]; sampleCap?: number } = {},
+): GeoRecallReport {
+  const detectTypes = opts.types ?? entitiesForVertical("geo");
+  const sampleCap = opts.sampleCap ?? 20;
+
+  const totals = Object.fromEntries(
+    GEO_RECALL_TYPES.map((t) => [t, { вИсходном: 0, осталосьПослеМаски: 0, полнотаPct: null }]),
+  ) as Record<GeoRecallType, GeoRecallPerType>;
+  const leaks: GeoRecallLeak[] = [];
+
+  for (const doc of docs) {
+    const masked = maskDetected(doc.text, detectEntities(doc.text, detectTypes));
+    for (const type of GEO_RECALL_TYPES) {
+      totals[type].вИсходном += netMatches(type, doc.text).length;
+      for (const m of netMatches(type, masked)) {
+        // Матч, зацепивший подставленный токен вида [WELL] — артефакт маски, не пропуск.
+        const ctx = masked.slice(Math.max(0, m.index - 60), m.index + m.value.length + 60);
+        if (/\[[A-Z_]{3,}\]/.test(m.value)) continue;
+        totals[type].осталосьПослеМаски += 1;
+        if (leaks.length < sampleCap) {
+          leaks.push({ type, value: m.value, context: ctx });
+        }
+      }
+    }
+  }
+
+  for (const type of GEO_RECALL_TYPES) {
+    const t = totals[type];
+    t.полнотаPct = t.вИсходном === 0 ? null : Math.round((1 - t.осталосьПослеМаски / t.вИсходном) * 10000) / 100;
+  }
+
+  return {
+    документов: docs.length,
+    типы: totals,
+    примерыПропусков: leaks,
+    методика:
+      "сеть-подсказка (жадные независимые паттерны) по исходному и обезличенному тексту; " +
+      "полнота — НИЖНЯЯ оценка относительно сети; примеры пропусков не покидают машину",
+  };
+}
