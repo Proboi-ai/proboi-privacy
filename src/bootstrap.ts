@@ -29,6 +29,7 @@ import {
   createAuditComponent,
   createGeoMaskComponent,
   createTextDeidComponent,
+  createScanRedactComponent,
   type KeysComponent,
 } from './components';
 import { GeoVault } from './geo/vault';
@@ -114,9 +115,10 @@ export async function bootstrapPrivacy(opts: BootstrapOpts = {}): Promise<Privac
   const audit = createAuditComponent({ now });
   const geoMask = createGeoMaskComponent(geoVault);
   const textDeid = createTextDeidComponent(tokenVault, { sidecar });
+  const scanRedact = createScanRedactComponent();
 
   const registry = new ComponentRegistry();
-  for (const c of [keys, envelope, audit, geoMask, textDeid]) registry.register(c);
+  for (const c of [keys, envelope, audit, geoMask, textDeid, scanRedact]) registry.register(c);
 
   // --- Store: файловый (прод) либо in-memory ---
   const store =

@@ -14,3 +14,6 @@ export { createGeoMaskComponent, tokenizeCoords, detokenizeCoords } from './geo-
 
 // де-ид текста, TS-дефолт
 export { createTextDeidComponent, tokenizeText, detokenizeText } from './text-deid';
+
+// fail-closed заслон для сканов (OCR-redact не реализован)
+export { createScanRedactComponent, isScanPayload } from './scan-redact';

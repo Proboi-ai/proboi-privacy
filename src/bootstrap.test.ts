@@ -19,7 +19,7 @@ describe('bootstrapPrivacy — деплой-opt-in', () => {
     await h.stop();
   });
 
-  it('on → полная сборка: 5 компонентов зарегистрированы', async () => {
+  it('on → полная сборка: 6 компонентов зарегистрированы', async () => {
     const h = await bootstrapPrivacy({
       env: { PRIVACY_MODULE: 'on', PRIVACY_PROFILE: 'base' },
       store: new ConfigStore(memoryStore()),
@@ -27,7 +27,7 @@ describe('bootstrapPrivacy — деплой-opt-in', () => {
     });
     expect(h.enabled).toBe(true);
     const ids = h.module!.registry.list().map((c) => c.id).sort();
-    expect(ids).toEqual(['audit-logger', 'envelope', 'geo-mask', 'key-store', 'text-deid']);
+    expect(ids).toEqual(['audit-logger', 'envelope', 'geo-mask', 'key-store', 'scan-redact', 'text-deid']);
     await h.stop();
   });
 
