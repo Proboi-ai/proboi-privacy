@@ -10,6 +10,8 @@ export const PRIVACY_MODULE = process.env.PRIVACY_MODULE ?? 'off';
 export const PRIVACY_BACKEND_HOST = process.env.PRIVACY_BACKEND_HOST ?? '127.0.0.1';
 // 0 = эфемерный порт (удобно в тестах); в проде задать явно (напр. 7090)
 export const PRIVACY_BACKEND_PORT = parseInt(process.env.PRIVACY_BACKEND_PORT ?? '0', 10);
+// Bearer для backend API. Пусто допустимо только на loopback bind (dev/test).
+export const PRIVACY_BACKEND_TOKEN = process.env.PRIVACY_BACKEND_TOKEN ?? '';
 
 // Активный профиль при старте: 'base' | 'geo' | 'legal'
 export const PRIVACY_PROFILE = process.env.PRIVACY_PROFILE ?? 'base';

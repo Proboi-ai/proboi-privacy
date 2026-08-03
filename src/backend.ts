@@ -2,8 +2,7 @@
  * PrivacyBackend — loopback HTTP API для управления модулем.
  * Слушает ТОЛЬКО на 127.0.0.1 (не 0.0.0.0).
  *
- * Сейчас нет CSRF-защиты и авторизации — loopback достаточно.
- * TODO: HMAC-токен или Unix-socket для CSRF/авторизации.
+ * Пустой токен допустим только на loopback (dev/test). Внешний bind fail-closed.
  *
  * Роуты:
  *   GET  /profiles              → список пресетов
@@ -17,7 +16,8 @@
 
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { PRIVACY_BACKEND_HOST, PRIVACY_BACKEND_PORT } from './config';
+import { timingSafeEqual } from 'node:crypto';
+import { PRIVACY_BACKEND_HOST, PRIVACY_BACKEND_PORT, PRIVACY_BACKEND_TOKEN } from './config';
 import { BUILTIN_PROFILES, applyProfile } from './profiles';
 import type { ComponentRegistry } from './registry';
 import type { ConfigStore } from './config-store';
@@ -25,6 +25,24 @@ import type { SidecarManager } from './sidecar';
 import type { AuditEvent } from './types';
 
 const ADMIN_DIST = join(import.meta.dir, '..', '..', 'admin-mockup', 'dist');
+
+export interface PrivacyBackendOptions {
+  host?: string;
+  port?: number;
+  token?: string;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return normalized === 'localhost' || normalized === '::1' || /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
+function tokenMatches(actual: string | null, expected: string): boolean {
+  if (!actual?.startsWith('Bearer ')) return false;
+  const supplied = Buffer.from(actual.slice(7));
+  const wanted = Buffer.from(expected);
+  return supplied.length === wanted.length && timingSafeEqual(supplied, wanted);
+}
 
 export class PrivacyBackend {
   private server: ReturnType<typeof Bun.serve> | null = null;
@@ -35,6 +53,7 @@ export class PrivacyBackend {
     private readonly registry: ComponentRegistry,
     private readonly store: ConfigStore,
     private readonly sidecar: SidecarManager,
+    private readonly options: PrivacyBackendOptions = {},
   ) {}
 
   /** Добавить запись в in-memory аудит-лог */
@@ -47,9 +66,15 @@ export class PrivacyBackend {
   /** Запустить сервер; возвращает реальный порт (важно для port=0) */
   start(): number {
     const self = this;
+    const host = this.options.host ?? PRIVACY_BACKEND_HOST;
+    const port = this.options.port ?? PRIVACY_BACKEND_PORT;
+    const token = this.options.token ?? PRIVACY_BACKEND_TOKEN;
+    if (!isLoopbackHost(host) && token.length < 16) {
+      throw new Error('Privacy Backend: non-loopback bind требует PRIVACY_BACKEND_TOKEN (минимум 16 символов)');
+    }
     this.server = Bun.serve({
-      hostname: PRIVACY_BACKEND_HOST,
-      port: PRIVACY_BACKEND_PORT,
+      hostname: host,
+      port,
       async fetch(req) {
         return self.handle(req);
       },
@@ -66,6 +91,18 @@ export class PrivacyBackend {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method.toUpperCase();
+    const token = this.options.token ?? PRIVACY_BACKEND_TOKEN;
+
+    if (token && !tokenMatches(req.headers.get('authorization'), token)) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      const origin = req.headers.get('origin');
+      const crossSite = req.headers.get('sec-fetch-site') === 'cross-site';
+      if (crossSite || (origin !== null && origin !== url.origin)) {
+        return json({ error: 'Forbidden origin' }, 403);
+      }
+    }
 
     // GET /profiles
     if (method === 'GET' && path === '/profiles') {

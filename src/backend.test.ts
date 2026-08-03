@@ -107,4 +107,63 @@ describe('PrivacyBackend', () => {
     const res = await fetch(`${baseUrl}/profiles/nonexistent/apply`, { method: 'POST' });
     expect(res.status).toBe(404);
   });
+
+  it('non-loopback bind без сильного токена отказывается стартовать', () => {
+    const external = new PrivacyBackend(registry, store, sidecar, { host: '0.0.0.0', port: 0, token: '' });
+    expect(() => external.start()).toThrow(/non-loopback bind.*TOKEN/);
+  });
+
+  it('Bearer token защищает API, а loopback с токеном остаётся доступен авторизованному клиенту', async () => {
+    const token = 'privacy-test-token-123456';
+    const secured = new PrivacyBackend(registry, store, sidecar, { host: '127.0.0.1', port: 0, token });
+    const url = `http://127.0.0.1:${secured.start()}`;
+    try {
+      expect((await fetch(`${url}/components`)).status).toBe(401);
+      expect((await fetch(`${url}/components`, {
+        headers: { authorization: `Bearer ${token}` },
+      })).status).toBe(200);
+    } finally {
+      secured.stop();
+    }
+  });
+
+  it('state-changing routes reject cross-origin requests before mutation', async () => {
+    const token = 'privacy-test-token-123456';
+    const isolatedRegistry = new ComponentRegistry();
+    isolatedRegistry.register(stub('audit-logger'));
+    const secured = new PrivacyBackend(
+      isolatedRegistry,
+      new ConfigStore(memoryStore()),
+      sidecar,
+      { host: '127.0.0.1', port: 0, token },
+    );
+    const url = `http://127.0.0.1:${secured.start()}`;
+    try {
+      const denied = await fetch(`${url}/components/audit-logger`, {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          origin: 'https://evil.example',
+        },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(denied.status).toBe(403);
+      expect(isolatedRegistry.isEnabled('audit-logger')).toBe(false);
+
+      const allowed = await fetch(`${url}/components/audit-logger`, {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          origin: url,
+        },
+        body: JSON.stringify({ enabled: true }),
+      });
+      expect(allowed.status).toBe(200);
+      expect(isolatedRegistry.isEnabled('audit-logger')).toBe(true);
+    } finally {
+      secured.stop();
+    }
+  });
 });
