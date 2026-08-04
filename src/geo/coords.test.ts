@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { detectCoords } from "./coords";
+import { detectEntities } from "../deid/detect";
 
 describe("privacy/geo/coords: детекция", () => {
   it("десятичные градусы, широта-долгота по умолчанию", () => {
@@ -259,5 +260,25 @@ describe("формы записи, найденные замером 04.08", () 
 
   it("десятичная запятая с пробелом по-прежнему не путается: «0,5852 1,1704» не координата", () => {
     expect(detectCoords("траншей, пазух 100 м3 0,5852 1,1704/2 котлованов").length).toBe(0);
+  });
+});
+
+describe("координаты после нормализации грязного текста", () => {
+  it("полноширинные цифры из скана чинятся и координата находится", () => {
+    // detectEntities нормализует текст; detectCoords в одиночку эти формы не понимает.
+    const hits = detectEntities("\uFF15\uFF16\u00B0\uFF13\uFF10' с.ш. \uFF11\uFF10\uFF18\u00B0\uFF14\uFF15' в.д.", ["COORD"]);
+    expect(hits.length).toBe(1);
+  });
+
+  it("невидимый разделитель внутри координаты не мешает", () => {
+    const hits = detectEntities("56\u200B°30' с.ш. 108°45' в.д.", ["COORD"]);
+    expect(hits.length).toBe(1);
+  });
+
+  it("спан возвращается в координаты ИСХОДНОГО текста", () => {
+    const src = "Точка 56°30' с.ш. 108°45' в.д. на карте";
+    const hits = detectEntities(src, ["COORD"]);
+    expect(hits.length).toBe(1);
+    expect(src.slice(hits[0]!.index, hits[0]!.index + hits[0]!.raw.length)).toBe(hits[0]!.raw);
   });
 });

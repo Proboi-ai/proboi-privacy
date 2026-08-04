@@ -702,9 +702,21 @@ export function detectEntities(text: string, types: EntityType[]): DetectedEntit
   // COORD не regex-правило detect.ts — делегируем в специализированный geo/coords
   // (DMS/десятичные градусы/полушария + валидация диапазона lat±90/lon±180). Координата =
   // PII (решение владельца) → токенизируем ДО облака наравне с ФИО/ORG.
+  // Координаты ищем по НОРМАЛИЗОВАННОМУ тексту, как и всё остальное. Раньше сюда шёл
+  // сырой `text`, и координаты в одиночку оставались без починки OCR-грязи: разрядка
+  // («5 6 ° 3 0 '»), латинские двойники, мягкие переносы. Спан возвращаем в исходные
+  // координаты через toSourceSpan — в сейф обязано попасть то, что реально написано
+  // в документе, иначе ре-идентификация подставит не тот кусок.
   if (types.includes("COORD")) {
-    for (const c of detectCoords(text)) {
-      found.push({ type: "COORD", raw: c.raw, index: c.index, confidence: "high", source: "rule" });
+    for (const c of detectCoords(normalized.text)) {
+      const [from, to] = toSourceSpan(normalized, c.index, c.index + c.raw.length);
+      found.push({
+        type: "COORD",
+        raw: text.slice(from, to),
+        index: from,
+        confidence: "high",
+        source: "rule",
+      });
     }
   }
   return resolveOverlaps(found);
