@@ -84,6 +84,24 @@ const DMS_SRC = `\\d{1,3}\\s*${DEG_SIGN}\\s*\\d{1,2}\\s*${MIN_SIGN}\\s*(?:\\d{1,
 const DEC_SRC = `[+-]?\\d{1,3}[.,]\\d{3,}\\s*${DEG_SIGN}?\\s*${HEMI_SUF_SRC}`;
 const COMP_SRC = `(?:${DMS_SRC}|${DEC_SRC})`;
 /**
+ * Одиночная компонента с ОБЯЗАТЕЛЬНЫМ полушарием — самостоятельная координата.
+ *
+ * Пара — не единственная форма записи. В таблицах полигонов широта и долгота стоят в
+ * разных ячейках, между ними другие столбцы, и правило пары их не связывает; вторую
+ * половину нередко уже забрала соседняя пара. Замер 04.08 на корпусе ЕИС: «45° 44' 38"
+ * з.д.» и «20°08'45" с.ш.» оставались открытыми, хотя каждая из них — точная линия на
+ * карте и по смыслу ровно та же привязка, что и пара.
+ *
+ * Точность держат ДВА признака вместе: знак градуса И полушарие. Голое «45°» — это угол
+ * наклона или поворота, голое «в.д.» — сокращение «высокого давления» в трубопроводных
+ * спецификациях; поодиночке ни то ни другое координатой не является.
+ */
+const HEMI_SUF_REQ_SRC = `(?:${HEMI_RU_SRC}|[${HEMI}](?![А-Яа-яЁёA-Za-z]))`;
+const SOLO_RE = new RegExp(
+  `\\d{1,3}\\s*${DEG_SIGN}\\s*\\d{1,2}\\s*${MIN_SIGN}\\s*(?:\\d{1,2}(?:[.,]\\d+)?\\s*${SEC_SIGN})?\\s*${HEMI_SUF_REQ_SRC}`,
+  "gu",
+);
+/**
  * Разделитель пары. Обычный случай — пробел (с необязательной запятой перед ним).
  * Отдельная ветка: запятая БЕЗ пробела, когда десятичный разделитель — точка
  * («в ГСК-11: 48.37197256,135.0878385»). Требование «точка внутри обеих компонент»
@@ -185,6 +203,10 @@ function isAnchoredDecimalPair(text: string, raw: string, index: number): boolea
   if (values.some((v) => v < 1)) return false;
   if (nums[0]!.replace(",", ".") === nums[1]!.replace(",", ".")) return false;
   const fractions = nums.map((n) => n.split(/[.,]/)[1]?.length ?? 0);
+  // Пара координат записывается ОДНОЙ точностью: «13,507939 −44,916183», «48.37197256,
+  // 135.0878385». Разнобой в знаках выдаёт две разные величины, случайно оказавшиеся рядом:
+  // «1,432447895 51,9560» из сметы — это индекс-дефлятор и итог, а не точка на карте.
+  if (Math.abs(fractions[0]! - fractions[1]!) > 1) return false;
   return fractions.every((f) => f >= BARE_DEC_MIN_FRACTION);
 }
 
@@ -305,7 +327,27 @@ function dropOverlaps(items: DetectedCoord[]): DetectedCoord[] {
   return out;
 }
 
-/** Детектит все координаты (WGS84 + SK-42) в тексте. */
+/** Детектит одиночные компоненты с полушарием (см. SOLO_RE). */
+function detectSoloWGS84(text: string): DetectedCoord[] {
+  const out: DetectedCoord[] = [];
+  for (const m of text.matchAll(SOLO_RE)) {
+    const lead = m[0].length - m[0].trimStart().length;
+    const raw = m[0].trim();
+    const parsed = parseComponent(raw);
+    if (!parsed || !parsed.axis) continue;
+    if (Math.abs(parsed.value) > (parsed.axis === "lat" ? 90 : 180)) continue;
+    out.push({
+      raw,
+      index: m.index! + lead,
+      system: "WGS84",
+      ...(parsed.axis === "lat" ? { lat: parsed.value } : { lon: parsed.value }),
+    });
+  }
+  return out;
+}
+
+/** Детектит все координаты (WGS84 + SK-42) в тексте. Пары идут первыми: при пересечении
+ *  dropOverlaps оставит более длинный спан, то есть пару, а не её половину. */
 export function detectCoords(text: string): DetectedCoord[] {
-  return dropOverlaps([...detectWGS84(text), ...detectSK42(text)]);
+  return dropOverlaps([...detectWGS84(text), ...detectSoloWGS84(text), ...detectSK42(text)]);
 }

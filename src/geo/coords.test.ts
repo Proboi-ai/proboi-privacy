@@ -282,3 +282,27 @@ describe("координаты после нормализации грязно�
     expect(src.slice(hits[0]!.index, hits[0]!.index + hits[0]!.raw.length)).toBe(hits[0]!.raw);
   });
 });
+
+describe("координаты: одиночная компонента и сметный разнобой (замер ЕИС 04.08)", () => {
+  it("одиночная компонента со знаком градуса И полушарием — координата", () => {
+    expect(detectCoords('45° 44\' 38" з.д.').length).toBe(1);
+    expect(detectCoords("20°08'45\" с.ш.").length).toBe(1);
+  });
+
+  it("одного признака мало: угол без полушария и «в.д.» без градусов не координаты", () => {
+    expect(detectCoords("уклон 45° к горизонту").length).toBe(0);
+    expect(detectCoords("ø159в.д., протяженностью 0,05 км").length).toBe(0);
+  });
+
+  it("пара пишется одной точностью — разнобой знаков выдаёт смету", () => {
+    expect(detectCoords("индекс тендерный 1,432447895 51,9560 Всего по смете").length).toBe(0);
+    expect(detectCoords("13,507939 -44,916183").length).toBe(1);
+  });
+
+  it("пара по-прежнему выигрывает у своей половины", () => {
+    const hits = detectCoords("20° 45' 57\" с.ш. 45° 38' 02\" з.д.");
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.raw).toContain("с.ш.");
+    expect(hits[0]!.raw).toContain("з.д.");
+  });
+});
