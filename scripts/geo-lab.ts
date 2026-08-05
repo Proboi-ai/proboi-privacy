@@ -8,7 +8,14 @@
  *   bun geo-lab.ts misses --type GEO_NAME       — что осталось открытым, по формам
  *   bun geo-lab.ts hits   --type GEO_NAME       — что детектор ЗАМАСКИРОВАЛ (для точности)
  */
-import { detectEntities } from "../src/deid/detect";
+import { detectEntities as detectRules, resolveOverlaps } from "../src/deid/detect";
+import { spreadGeoNames } from "../src/deid/geo-spread";
+
+/** Повторяет боевой конвейер: правила + протяжка гео-имени (см. components/text-deid.ts). */
+const detectEntities = (text: string, types: Parameters<typeof detectRules>[1]) => {
+  const ents = detectRules(text, types);
+  return types.includes("GEO_NAME") ? resolveOverlaps([...ents, ...spreadGeoNames(text, ents)]) : ents;
+};
 import { entitiesForVertical } from "../src/deid/entities";
 import { maskDetected, geoNetMatches, GEO_RECALL_TYPES } from "../src/validation-geo";
 
@@ -104,7 +111,66 @@ function runNet(docs: { text: string }[]): Item[] {
   return out;
 }
 
-const RUN = { measure: runMeasure, misses: runMisses, hits: runHits, net: runNet } as const;
+/**
+ * Сколько даст ПРОТЯЖКА гео-имени по документу (как spread.ts тянет личность).
+ *
+ * Имя, подтверждённое ключевым словом («Нямдинская площадь», «месторождение Ихала»),
+ * дальше в том же документе упоминается голым: «на Нямдинской», «в пределах Ихалы».
+ * Правилу такое вхождение взять неоткуда — контекста рядом нет. Считаем, сколько таких
+ * вхождений остаётся открытым, чтобы понять, стоит ли протяжка работы.
+ */
+const GEO_KEY_WORDS =
+  /(?:^|\s)(?:месторождени[а-яё]*|проявлени[а-яё]*|участк[а-яё]*|участок|площад[а-яё]*|рек[аиеуой]|р\.|уч\.|недр)(?=\s|$)/giu;
+/** Основа имени без падежного окончания: «Нямдинской» → «нямдинск». */
+function nameStem(word: string): string | null {
+  const w = word.replace(/[«»"',.;:()]/g, "");
+  if (w.length < 5 || !/^[А-ЯЁ]/u.test(w)) return null;
+  const stem = w.replace(/(?:ого|его|ому|ему|ыми|ими|ская|ской|ские|ских|ое|ая|ый|ий|ой|ые|ие|ых|их|ым|им|ом|ем|ей|ую|юю|а|у|е|ы|и)$/u, "");
+  return stem.length >= 4 ? stem.toLowerCase() : null;
+}
+
+function runSpread(docs: { text: string }[]): Item[] {
+  const types = entitiesForVertical("geo");
+  const out: Item[] = [];
+  for (const doc of docs) {
+    const hits = detectEntities(doc.text, types).filter((e) => e.type === "GEO_NAME");
+    if (!hits.length) continue;
+    const stems = new Set<string>();
+    for (const h of hits) {
+      // Гидроним не тянем: реки называют по городам («р. Москва»), и протяжка ушла бы
+      // на сам город — а область, край и столица по решению владельца не маскируются.
+      if (/^(?:р\.|рек)/iu.test(h.raw)) continue;
+      for (const w of h.raw.replace(GEO_KEY_WORDS, " ").split(/\s+/)) {
+        const s = nameStem(w);
+        if (s) stems.add(s);
+      }
+    }
+    if (!stems.size) continue;
+    // Тот же ограничитель, что у протяжки личности: слово, которое в ЭТОМ ЖЕ документе
+    // встречается со строчной, — обычное слово, а не имя. «Проектной», «земельного»
+    // стоят с заглавной только в начале предложения, и без этой проверки протяжка
+    // размножала бы ложняк на весь документ (182 и 57 вхождений на корпусе ЕИС).
+    for (const s of [...stems]) {
+      const lower = new RegExp(`(?<![А-ЯЁа-яё])${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[а-яё]{0,4}(?![А-ЯЁа-яё])`, "gu");
+      if (lower.test(doc.text)) stems.delete(s);
+    }
+    if (!stems.size) continue;
+    const masked = maskDetected(doc.text, detectEntities(doc.text, types));
+    for (const s of stems) {
+      const re = new RegExp(`(?<![А-ЯЁа-яё])${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[а-яё]{0,4}(?![А-ЯЁа-яё])`, "giu");
+      for (const m of masked.matchAll(re)) {
+        const i = m.index ?? 0;
+        out.push({
+          value: `${s}\t${m[0].toLowerCase()}`,
+          ctx: masked.slice(Math.max(0, i - 50), i + m[0].length + 50).replace(/\s+/g, " "),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+const RUN = { measure: runMeasure, misses: runMisses, hits: runHits, net: runNet, spread: runSpread } as const;
 
 // ── рабочий: считает свою долю ──
 const slicePath = arg("worker");

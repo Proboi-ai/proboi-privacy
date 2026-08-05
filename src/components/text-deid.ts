@@ -19,6 +19,7 @@ import { normalizeForDetection, softenAllCaps, toSourceSpan } from "../deid/norm
 import { ENTITY_TYPES, entitiesForVertical, isVertical } from "../deid/entities";
 import { cueBefore, originalFor, surrogateForms } from "../deid/identity";
 import { spreadIdentities, spreadSurfaces } from "../deid/spread";
+import { spreadGeoNames } from "../deid/geo-spread";
 import { filterNerPersons, refinePersons, spanKey } from "../deid/precision";
 import { createLocalMorphAdapter, NOOP_MORPH, type MorphAdapter } from "../deid/morph";
 import {
@@ -296,6 +297,11 @@ export function createTextDeidComponent(
       // закрытое в одном месте, закрывается везде) — вторая работает и по протянутым формам.
       if (types.includes("PER")) {
         ents = resolveOverlaps([...ents, ...spreadIdentities(p.text, ents)]);
+      }
+      // Гео-имя тянется по тому же принципу, что и личность: подтверждённое ключевым словом
+      // название закрывается по всему документу, где автор ключ уже не повторяет.
+      if (types.includes("GEO_NAME")) {
+        ents = resolveOverlaps([...ents, ...spreadGeoNames(p.text, ents)]);
       }
       ents = resolveOverlaps([...ents, ...spreadSurfaces(p.text, ents)]);
 
