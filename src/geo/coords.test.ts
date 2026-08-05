@@ -306,3 +306,25 @@ describe("координаты: одиночная компонента и см�
     expect(hits[0]!.raw).toContain("з.д.");
   });
 });
+
+describe("координаты: сметная строка против измерения (замер eis-other 05.08)", () => {
+  it("дробь, добитая нулями, — колонка таблицы, а не координата", () => {
+    expect(detectCoords("8,50000 97,75000").length).toBe(0);
+    expect(detectCoords("4,00000 8,00000").length).toBe(0);
+  });
+
+  it("второе число кратно первому — расценка и итог", () => {
+    expect(detectCoords("2,00050 30,00750").length).toBe(0);
+    expect(detectCoords("1,84352 55,30560").length).toBe(0);
+  });
+
+  it("настоящие пары этими признаками не задеты", () => {
+    expect(detectCoords("13,507939 -44,916183").length).toBe(1);
+    expect(detectCoords("55,728203 49,218286").length).toBe(1);
+    expect(detectCoords("45,050095; 38,981429").length).toBe(1);
+  });
+
+  it("слово-маркер по-прежнему перевешивает: автор прямо назвал числа координатами", () => {
+    expect(detectCoords("координаты 8,50000 97,75000 объекта").length).toBe(1);
+  });
+});

@@ -170,7 +170,77 @@ function runSpread(docs: { text: string }[]): Item[] {
   return out;
 }
 
-const RUN = { measure: runMeasure, misses: runMisses, hits: runHits, net: runNet, spread: runSpread } as const;
+/**
+ * Сверка со СТОРОННИМ справочником топонимов — метки не наши.
+ *
+ * Зачем. Полнота и точность GEO_NAME до сих пор считались по РУЧНОЙ разметке форм, и делал
+ * её тот же, кто правил детектор. Цифра может быть верной, но подтверждения у неё нет.
+ * Справочник GeoNames (CC BY, ~250 тыс. российских топонимов) в нашей работе не участвовал
+ * и потому годится как независимый судья.
+ *
+ * Что считаем. Три числа, и каждое отвечает на свой вопрос:
+ *   • находка ЕСТЬ в справочнике → настоящее название, детектор прав;
+ *   • находки НЕТ в справочнике → кандидат в ложняк (или объект, которого нет в GeoNames:
+ *     мелкие участки недр туда не попадают, поэтому это верхняя оценка ошибки, не точная);
+ *   • кандидат сети остался ОТКРЫТЫМ, но ЕСТЬ в справочнике → пропуск, подтверждённый
+ *     со стороны. Вот это самое ценное: своей разметке тут верить не нужно.
+ *
+ * Сверяем по ОСНОВЕ: в справочнике именительный падеж («Китой», «Нямдинская»), у нас
+ * падежные формы и прилагательные. Стеммер тут СВОЙ, а не из src/: судья, пользующийся
+ * внутренностями подсудимого, независимым быть перестаёт.
+ */
+function judgeStem(word: string): string | null {
+  const w = word.replace(/[«»"',.;:()№]/gu, "").trim();
+  if (!/^[А-ЯЁ]/u.test(w)) return null;
+  const stem = w
+    .toLowerCase()
+    .replace(/(?:овско|евско|инско|ско|ая|ое|ый|ий|ой|ые|ие|ого|его|ому|ему|ым|им|ом|ем|ей|ой|ую|юю|ых|их|а|у|е|ы|и|ь)+$/u, "");
+  return stem.length >= 4 ? stem : null;
+}
+
+function loadGazetteer(path: string): Set<string> {
+  const out = new Set<string>();
+  try {
+    const raw = require("node:fs").readFileSync(path, "utf8") as string;
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      const name = JSON.parse(line).name as string;
+      for (const part of String(name).split(/[\s-]+/u)) {
+        const s = judgeStem(part);
+        if (s) out.add(s);
+      }
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
+
+function runJudge(docs: { text: string }[]): Item[] {
+  const types = entitiesForVertical("geo");
+  const out: Item[] = [];
+  for (const doc of docs) {
+    for (const e of detectEntities(doc.text, types)) {
+      if (e.type !== "GEO_NAME") continue;
+      out.push({ value: `находка\t${e.raw.replace(/\s+/gu, " ").trim().toLowerCase()}`, ctx: "" });
+    }
+    const masked = maskDetected(doc.text, detectEntities(doc.text, types));
+    for (const m of geoNetMatches("GEO_NAME", masked)) {
+      if (/\[[A-Z_]{3,}\]/.test(m.value)) continue;
+      out.push({ value: `открыто\t${m.value.replace(/\s+/gu, " ").trim().toLowerCase()}`, ctx: "" });
+    }
+  }
+  return out;
+}
+
+const RUN = {
+  measure: runMeasure,
+  misses: runMisses,
+  hits: runHits,
+  net: runNet,
+  spread: runSpread,
+  judge: runJudge,
+} as const;
 
 // ── рабочий: считает свою долю ──
 const slicePath = arg("worker");
@@ -231,6 +301,47 @@ if (mode === "measure") {
         `${String(v.осталось).padStart(17)}  ${pct.padStart(7)}`,
     );
   }
+} else if (mode === "judge") {
+  const gazPath = arg("gazetteer", ".corpus/gazetteer-ru.jsonl")!;
+  const gaz = loadGazetteer(gazPath);
+  if (!gaz.size) {
+    console.log(`справочник не прочитан: ${gazPath} — сверять не с чем`);
+    process.exit(2);
+  }
+  const inGaz = (form: string): boolean =>
+    form.split(/\s+/u).some((w) => {
+      const s = judgeStem(w.charAt(0).toUpperCase() + w.slice(1));
+      return s ? gaz.has(s) : false;
+    });
+
+  const tally = { находкаПодтв: 0, находкаНет: 0, открытоПодтв: 0, открытоНет: 0 };
+  const examples = { находкаНет: new Map<string, number>(), открытоПодтв: new Map<string, number>() };
+  for (const it of (parts as Item[][]).flat()) {
+    const [kind, form] = it.value.split("\t") as [string, string];
+    const hit = inGaz(form);
+    if (kind === "находка") {
+      if (hit) tally.находкаПодтв += 1;
+      else {
+        tally.находкаНет += 1;
+        examples.находкаНет.set(form, (examples.находкаНет.get(form) ?? 0) + 1);
+      }
+    } else if (hit) {
+      tally.открытоПодтв += 1;
+      examples.открытоПодтв.set(form, (examples.открытоПодтв.get(form) ?? 0) + 1);
+    } else tally.открытоНет += 1;
+  }
+  const hits = tally.находкаПодтв + tally.находкаНет;
+  console.log(`справочник: ${gaz.size} основ | документов ${docs.length} | время ${secs} с\n`);
+  console.log(`находок детектора        ${hits}`);
+  console.log(`  подтверждено справочником ${tally.находкаПодтв}  (${((100 * tally.находкаПодтв) / (hits || 1)).toFixed(1)}%)`);
+  console.log(`  справочник не знает       ${tally.находкаНет}  ← кандидаты в ложняк (верхняя оценка)`);
+  console.log(`осталось открытым        ${tally.открытоПодтв + tally.открытоНет}`);
+  console.log(`  ЕСТЬ в справочнике        ${tally.открытоПодтв}  ← пропуски, подтверждённые СО СТОРОНЫ`);
+  console.log(`  справочник не знает       ${tally.открытоНет}  (скорее всего и не названия)`);
+  const top = (m: Map<string, number>, n: number) =>
+    [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([f, c]) => `${c}× ${f}`).join("; ");
+  console.log(`\nпропуски, подтверждённые справочником: ${top(examples.открытоПодтв, 20) || "нет"}`);
+  console.log(`\nнаходки вне справочника: ${top(examples.находкаНет, 20) || "нет"}`);
 } else {
   const all = (parts as Item[][]).flat();
   const groups = new Map<string, { n: number; ctx: string[] }>();
