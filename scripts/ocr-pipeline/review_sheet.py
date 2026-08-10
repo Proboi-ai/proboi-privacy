@@ -12,7 +12,11 @@
 На выходе один HTML: вырезка, что прочитала машина, и галочка «неверно». Файл кладётся
 в out/ — он содержит куски документов клиента и в публичный репозиторий не поедет.
 
-  review_sheet.py <главная.values.jsonl> <второй.values.jsonl> <out.html> [--int8-tag=..]
+Колонка «поле» приходит из `fieldmap.py`. Она нужна не для красоты: без имени поля
+человек сверяет голые числа и не видит бессмыслицы вроде «азимут = 1164,8». С именем
+та же проверка ловит и ошибку чтения, и ошибку привязки — за те же полчаса.
+
+  review_sheet.py <главная.values.jsonl> <второй.values.jsonl> <out.html> [--no-fields]
 """
 import base64
 import html
@@ -44,7 +48,7 @@ TPL_HEAD = """<!doctype html><meta charset="utf-8">
 прочитала неверно. Пустые и нечитаемые глазом вырезки считайте неверными только если
 машина выдала на них число. Внизу — итоговая точность.</div>
 <table><tr><th style="width:130px">вырезка</th><th style="width:150px">прочитано</th>
-<th style="width:120px">страница</th><th>неверно</th></tr>
+<th style="width:230px">поле</th><th style="width:110px">страница</th><th>неверно</th></tr>
 """
 
 TPL_TAIL = """</table>
@@ -78,6 +82,7 @@ def load(path):
 
 def main():
     a_path, b_path, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+    with_fields = "--no-fields" not in sys.argv
     A, B = load(a_path), load(b_path)
     accepted = []
     for k in A:
@@ -90,19 +95,28 @@ def main():
 
     # вырезки берём тем же extract, что и распознавание, — иначе покажем не то,
     # что читала модель
-    crops = {}
+    crops, fields = {}, {}
     for pg in sorted({k[0] for k, _ in accepted}):
-        vals, _ = extract(f"bench/img300/{pg}.jpg")
+        path = f"bench/img300/{pg}.jpg"
+        vals, _ = extract(path)
         for v in vals:
             crops[(pg, tuple(v["box"]))] = v["crop"]
+        if with_fields:
+            from fieldmap import attach
+            for r in attach(path, [dict(box=v["box"], px=v["px"]) for v in vals]):
+                fields[(pg, r["box"])] = r["field"]
 
     pages = len({k[0] for k, _ in accepted})
     rows = []
+    named = 0
     for (pg, box), txt in accepted:
         im = crops.get((pg, box))
         img = (f'<img src="data:image/png;base64,{b64(im)}">' if im
                else '<span class="pg">вырезка не найдена</span>')
+        f = fields.get((pg, box))
+        named += bool(f)
         rows.append(f'<tr><td>{img}</td><td class="val">{html.escape(txt)}</td>'
+                    f'<td>{html.escape(f) if f else "<span class=pg>—</span>"}</td>'
                     f'<td class="pg">{pg}</td><td><input type="checkbox"></td></tr>')
 
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
@@ -111,8 +125,9 @@ def main():
         f.write("\n".join(rows))
         f.write(TPL_TAIL.format(n=len(accepted)))
     print(f"принято чтений: {len(accepted)} с {pages} страниц → {dst}")
-    print(f"в среднем {len(accepted)/max(1,pages):.1f} принятых чтений на страницу "
-          f"(на стенде было 4,3)")
+    print(f"в среднем {len(accepted)/max(1,pages):.1f} принятых чтений на страницу")
+    if with_fields:
+        print(f"с именем поля: {named} ({named/max(1,len(accepted)):.0%})")
 
 
 if __name__ == "__main__":
