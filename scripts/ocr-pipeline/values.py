@@ -116,7 +116,7 @@ def extract(path, pad=14, min_px=12, min_group_px=40):
         if x1 - x0 < 16 or y1 - y0 < 16:
             continue
         out.append(dict(box=(x0, y0, x1, y1), px=g["n"],
-                        crop=hand.crop((x0, y0, x1, y1))))
+                        inkbox=tuple(g["box"]), crop=hand.crop((x0, y0, x1, y1))))
     out.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return out, meta
 

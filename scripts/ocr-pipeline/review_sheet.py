@@ -21,8 +21,15 @@
 разной ценой — первая портит значение, вторая уносит верное значение в чужую графу, —
 и лечатся они в разных местах конвейера. Внизу считаются обе.
 
+**Молчание (silence.py) встроено по умолчанию, не флагом.** Обрывок линовки,
+поле подписи и чтение без единой цифры отсекаются ДО показа человеку — задача 2
+редакции 5 хендоффа: 40 % «принятого» на held-out листе вообще не значения, и это
+измерено (harm=0 на эталоне и на held-out листе, silence.py). `--no-silence`
+выключает фильтр — только для отладки, чтобы увидеть сырую выдачу конвейера.
+
   review_sheet.py <главная.values.jsonl> <второй.values.jsonl> <out.html>
-                  [--no-fields] [--dir=bench/img300] [--gt=gt/gt.jsonl]
+                  [--no-fields] [--no-silence] [--digit] [--named] [--postfix]
+                  [--dir=bench/img300] [--gt=gt/gt.jsonl]
 """
 import base64
 import html
@@ -154,6 +161,11 @@ def main():
     need_digit = "--digit" in sys.argv
     need_name = "--named" in sys.argv
     do_postfix = "--postfix" in sys.argv
+    # Молчание (silence.py) теперь ВСТРОЕНО, не опция: линовка/подпись/чтение без
+    # цифры отсекаются по умолчанию, потому что измерено — это не значения (задача
+    # 2 редакции 5 хендоффа, harm=0 на эталоне и на held-out листе). --no-silence
+    # только для отладки, чтобы увидеть сырую выдачу конвейера.
+    do_silence = "--no-silence" not in sys.argv
     d, gt_path = "bench/img300", None
     for a in sys.argv[4:]:
         if a.startswith("--dir="):
@@ -176,22 +188,35 @@ def main():
         from verify import observed_sets
         sets = observed_sets([json.loads(l) for l in open(gt_path) if l.strip()])
 
-    rows, named = [], 0
+    rows, named, silenced = [], 0, 0
     for pg in sorted({k[0] for k, _ in accepted}):
         path = f"{d}/{pg}.jpg"
         page_im = Image.open(path)
         vals, _ = extract(path)
+        vbybox = {tuple(v["box"]): v for v in vals}
         info = {}
         if with_fields:
             from fieldmap import attach
             for r in attach(path, [dict(box=v["box"], px=v["px"]) for v in vals]):
                 info[r["box"]] = r
-        crops = {tuple(v["box"]): v["crop"] for v in vals} if do_postfix else {}
+        crops = {tuple(v["box"]): v["crop"] for v in vals} if (do_postfix or do_silence) else {}
+        rules = []
+        if do_silence:
+            from inklayer import split as _split
+            from slots import rulings as find_rulings
+            _, printed, _pmeta = _split(path)
+            rules = find_rulings(printed)
         for (p2, box), txt in accepted:
             if p2 != pg:
                 continue
             r = info.get(box, {})
             f = r.get("field")
+            if do_silence:
+                from silence import why_silent
+                v = vbybox.get(box, dict(inkbox=None))
+                if why_silent(v, f, txt, rules):
+                    silenced += 1
+                    continue
             # Отсев не-значений. 40 % принятого — это «-», «по», «с»: обрывки линовки
             # и росчерков подписи, попавшие в слой рукописи. Они не значения ни в
             # каком смысле, и держать их в приёмке значит мерить точность на мусоре.
@@ -235,9 +260,12 @@ def main():
         fh.write("\n".join(rows))
         fh.write(TPL_TAIL.format(n=len(accepted), nf=len(accepted) - named))
     print(f"принято чтений: {len(accepted)} с {pages} страниц → {dst}")
-    print(f"в среднем {len(accepted)/max(1,pages):.1f} принятых чтений на страницу")
+    if do_silence:
+        print(f"конвейер промолчал (линовка/подпись/без цифры): {silenced} "
+              f"({silenced/max(1,len(accepted)):.0%})")
+    print(f"в листе: {len(rows)}, в среднем {len(rows)/max(1,pages):.1f} на страницу")
     if with_fields:
-        print(f"с именем поля: {named} ({named/max(1,len(accepted)):.0%})")
+        print(f"с именем поля: {named} ({named/max(1,len(rows)):.0%})")
     print(f"размер файла: {os.path.getsize(dst)/1e6:.1f} МБ")
 
 
