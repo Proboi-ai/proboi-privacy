@@ -72,10 +72,37 @@ TPL_HEAD = """<!doctype html><meta charset="utf-8">
 
 TPL_TAIL = """</table>
 <div id="bar">строк {n} · читано неверно <b id="w">0</b> · поле не то <b id="f">0</b>
- · <b>точность чтения <span id="a">—</span></b> · точность привязки <span id="b">—</span></div>
+ · <b>точность чтения <span id="a">—</span></b> · точность привязки <span id="b">—</span>
+ &nbsp; <button onclick="dump()">Сохранить отметки в файл</button>
+ <button onclick="paste_()">Показать текстом</button></div>
 <script>
+// Отметки живут только в DOM: закрыл вкладку — работа пропала. Поэтому две кнопки,
+// а не одна: файл на диск и текст для копирования. Полчаса чужого времени стоят
+// дороже десяти строк скрипта.
 const W=[...document.querySelectorAll('.w')], F=[...document.querySelectorAll('.f')];
 const NF={nf};
+function rows(){{
+ return [...document.querySelectorAll('tr')].filter(t=>t.querySelector('.w'))
+  .map((t,i)=>[i+1, t.querySelector('.pg').textContent.trim(),
+               t.querySelector('.val').textContent.trim(),
+               t.querySelector('.w').checked?1:0, t.querySelector('.f').checked?1:0]);
+}}
+function text(){{
+ const r=rows(), w=r.filter(x=>x[3]).length, f=r.filter(x=>x[4]).length;
+ return `# всего\t${{r.length}}\tневерно\t${{w}}\tполе_не_то\t${{f}}\\n`
+      + `# N\tстраница\tпрочитано\tневерно\tполе_не_то\\n`
+      + r.filter(x=>x[3]||x[4]).map(x=>x.join('\t')).join('\\n');
+}}
+function dump(){{
+ const b=new Blob([text()],{{type:'text/tab-separated-values'}});
+ const a=document.createElement('a');
+ a.href=URL.createObjectURL(b); a.download='review_marks.tsv'; a.click();
+}}
+function paste_(){{
+ const a=document.createElement('textarea'); a.value=text();
+ a.style.cssText='position:fixed;inset:0;width:100%;height:100%;z-index:9999;font:12px monospace';
+ document.body.appendChild(a); a.select();
+}}
 function upd(){{
  const w=W.filter(r=>r.checked).length, f=F.filter(r=>r.checked).length;
  w_.textContent=w; f_.textContent=f;
