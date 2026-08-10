@@ -151,6 +151,9 @@ def strip(page_im, line, box, pad=14):
 def main():
     a_path, b_path, dst = sys.argv[1], sys.argv[2], sys.argv[3]
     with_fields = "--no-fields" not in sys.argv
+    need_digit = "--digit" in sys.argv
+    need_name = "--named" in sys.argv
+    do_postfix = "--postfix" in sys.argv
     d, gt_path = "bench/img300", None
     for a in sys.argv[4:]:
         if a.startswith("--dir="):
@@ -183,13 +186,30 @@ def main():
             from fieldmap import attach
             for r in attach(path, [dict(box=v["box"], px=v["px"]) for v in vals]):
                 info[r["box"]] = r
+        crops = {tuple(v["box"]): v["crop"] for v in vals} if do_postfix else {}
         for (p2, box), txt in accepted:
             if p2 != pg:
                 continue
             r = info.get(box, {})
+            f = r.get("field")
+            # Отсев не-значений. 40 % принятого — это «-», «по», «с»: обрывки линовки
+            # и росчерков подписи, попавшие в слой рукописи. Они не значения ни в
+            # каком смысле, и держать их в приёмке значит мерить точность на мусоре.
+            if need_digit and not any(ch.isdigit() for ch in txt):
+                continue
+            if need_name and not f:
+                continue
+            if do_postfix and f:
+                from postfix import decimal_fields, fix_confuse, fix_sep, fix_unit, numeric_fields
+                nf, df = numeric_fields(), decimal_fields()
+                for fn in (lambda t: fix_unit(t, f, nf),
+                           lambda t: fix_confuse(t, f, nf),
+                           lambda t: fix_sep(t, f, df, crops.get(box))):
+                    new, why = fn(txt)
+                    if why:
+                        txt = new
             line = r.get("line") or box
             im = strip(page_im, line, box)
-            f = r.get("field")
             named += bool(f)
             fld = (f'<span class="fld"><b>{html.escape(f)}</b></span>' if f
                    else '<span class="nofld">поле не определено</span>')
