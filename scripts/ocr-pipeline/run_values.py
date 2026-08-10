@@ -4,7 +4,11 @@
 Вход — не строки бланка, а отдельные значения на белом: ни линовки, ни печатных
 подписей. Пишем уверенность, как и в run_trocr2.py, — она нужна верификатору.
 
-  run_values.py <model_id> <out_prefix> [--pages=a,b]
+  run_values.py <model_id> <out_prefix> [--pages=a,b] [--int8]
+
+--int8 — динамическое квантование линейных слоёв. Обучения не требует и ускоряет
+основную модель в 2,2 раза, второй голос в 2,9. Ускорение замерено, КАЧЕСТВО — нет:
+гонять только вместе со score.py и сравнивать с неквантованным прогоном.
 """
 import glob, json, os, sys, time
 import numpy as np, torch
@@ -32,10 +36,15 @@ def rec(model, proc, ims):
 def main():
     mid, prefix = sys.argv[1], sys.argv[2]
     pages = PAGES
+    int8 = "--int8" in sys.argv
     for a in sys.argv[3:]:
         if a.startswith("--pages="): pages = a.split("=")[1].split(",")
     proc = TrOCRProcessor.from_pretrained(mid)
     model = VisionEncoderDecoderModel.from_pretrained(mid).to(DEV).eval()
+    if int8:
+        model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear},
+                                                    dtype=torch.qint8)
+        print("линейные слои квантованы в int8", flush=True)
     prow, vrow = [], []
     T = 0.0
     for pg in pages:
