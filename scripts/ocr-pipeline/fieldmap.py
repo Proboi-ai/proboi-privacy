@@ -170,7 +170,14 @@ def _overlap(a0, a1, b0, b1):
 
 
 def attach(path, vals=None):
-    """→ [{box, field, tail, head}] для каждого значения страницы."""
+    """→ [{box, field, tail, head, line, label}] для каждого значения страницы.
+
+    `line` — рамка ВСЕЙ печатной строки, к которой значение прицеплено, уже вместе
+    с самим значением по вертикали. Она нужна не разбору, а людям и последующим
+    проверкам: вырезка в 40 пикселей вне контекста непроверяема даже глазами —
+    непонятно, «32» это глубина или номер линии. `label` — та же подпись словами,
+    как её увидел OCR, без нормализации в поисковый вид.
+    """
     hand, printed, _meta = split(path)
     if vals is None:
         vals, _ = extract(path)
@@ -198,9 +205,14 @@ def attach(path, vals=None):
         words = lines[i]["words"]
         vs.sort(key=lambda v: v["box"][0])
         prev_x = -1
+        lx0 = min([w[0] for w in words] + [v["box"][0] for v in vs])
+        lx1 = max([w[1] for w in words] + [v["box"][2] for v in vs])
+        ly0 = min([lines[i]["y0"]] + [v["box"][1] for v in vs])
+        ly1 = max([lines[i]["y1"]] + [v["box"][3] for v in vs])
         for v in vs:
             x0 = v["box"][0]
-            tail = norm(" ".join(w[2] for w in words if prev_x < w[1] <= x0 + 8))
+            raw = " ".join(w[2] for w in words if prev_x < w[1] <= x0 + 8)
+            tail = norm(raw)
             head = norm(" ".join(w[2] for w in words if w[1] <= x0 + 8))
             # Строку-подпись бланк переносит: «14. Диаметры башмака: наружный ___
             # мм;» и на следующей строке «внутренний ___ мм;». Своего слова
@@ -211,10 +223,13 @@ def attach(path, vals=None):
                 head = (norm(" ".join(w[2] for w in lines[i - 1]["words"]))
                         + " " + head).strip()
             out.append(dict(box=tuple(v["box"]), field=match(tail, head),
-                            tail=tail[-48:], head=head[-90:]))
+                            tail=tail[-48:], head=head[-90:],
+                            line=(lx0, ly0, lx1, ly1), label=" ".join(raw.split())))
             prev_x = v["box"][2]
     for v in loose:
-        out.append(dict(box=tuple(v["box"]), field=None, tail="", head=""))
+        b = v["box"]
+        out.append(dict(box=tuple(b), field=None, tail="", head="",
+                        line=(b[0], b[1], b[2], b[3]), label=""))
     out.sort(key=lambda d: (d["box"][1], d["box"][0]))
     return out
 
