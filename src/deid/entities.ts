@@ -42,6 +42,12 @@ export interface EntityDef {
   detector: "regex" | "checksum" | "ner" | "coords";
   confidence: "high" | "medium";
   defaultOn: boolean;
+  /**
+   * Вертикали, где сущность НЕ применяется, даже если она общая. Нужна там, где правило
+   * верное само по себе, но в конкретной отрасли даёт только ложные срабатывания и
+   * отличить их регуляркой нельзя (см. IP в геологии). Пусто ⇒ поведение как раньше.
+   */
+  notIn: Vertical[];
 }
 
 const entity = (
@@ -51,7 +57,8 @@ const entity = (
   detector: EntityDef["detector"],
   confidence: EntityDef["confidence"] = "high",
   defaultOn = true,
-): EntityDef => ({ type, label, verticals, detector, confidence, defaultOn });
+  notIn: Vertical[] = [],
+): EntityDef => ({ type, label, verticals, detector, confidence, defaultOn, notIn });
 
 export const ENTITY_REGISTRY: readonly EntityDef[] = [
   entity("PER", "ФИО", ["common"], "ner"),
@@ -63,7 +70,13 @@ export const ENTITY_REGISTRY: readonly EntityDef[] = [
   entity("EMAIL", "Электронная почта", ["common"], "regex"),
   entity("ADDR", "Почтовый адрес", ["common"], "ner", "medium"),
   entity("URL", "Ссылка", ["common"], "regex"),
-  entity("IP", "IP-адрес", ["common"], "regex"),
+  // IP исключён из гео: в геологическом отчёте IP-адресов нет, а нумерация разделов
+  // («4.3.2.1», «15.4.1.1», «1.2.4.11») синтаксически неотличима от IPv4 и проходит любую
+  // проверку октетов. Замер 05.08 на архиве недропользователя: 557 находок IP на 752
+  // документах, среди осмотренных 77 форм настоящих адресов НОЛЬ — все до одной оказались
+  // номерами пунктов. Отличить их правилом нельзя (15.4.1.1 — валидный адрес), поэтому
+  // решение принимается на уровне вертикали, а не регулярки.
+  entity("IP", "IP-адрес", ["common"], "regex", "high", true, ["geo"]),
   entity("COORD", "Координаты", ["geo"], "coords"),
   entity("LICENSE_SUBSOIL", "Лицензия на недропользование", ["geo"], "regex", "medium"),
   entity("WELL", "Номер скважины", ["geo"], "regex", "medium"),
@@ -94,7 +107,9 @@ export const ENTITY_TYPES = ENTITY_REGISTRY.map(({ type }) => type);
 /** Общие сущности + сущности вертикали; выключенные по умолчанию типы не включаются. */
 export function entitiesForVertical(vertical: Vertical): EntityType[] {
   return ENTITY_REGISTRY
-    .filter((def) => def.defaultOn && def.verticals.some((v) => v === "common" || v === vertical))
+    .filter((def) => def.defaultOn
+      && !def.notIn.includes(vertical)
+      && def.verticals.some((v) => v === "common" || v === vertical))
     .map(({ type }) => type);
 }
 
