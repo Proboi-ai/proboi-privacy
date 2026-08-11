@@ -94,14 +94,23 @@ def separator(crop, n_digits):
 
 
 def fix(text, crop, field, dec_fields):
-    """→ (новый текст, почему) либо (text, None), если трогать нельзя."""
+    """→ (новый текст, почему) либо (text, None), если трогать нельзя.
+
+    Ровно ДВЕ цифры, не «две и больше». Гейт по DIAM_FIELDS не универсален:
+    на обучающих метках (11.08, `fix_labels.py`) «выход керна, %» = «100»
+    (законные 100 % — самое частое значение поля) чинилось в «10,0» тем же
+    механизмом, что раньше портил трёхзначные диаметры («151→1,51») — у
+    среднего «0» засечка проходит по всем признакам запятой. Полей с этой
+    болезнью в DIAM_FIELDS не было, значит дело не в списке полей, а в
+    ДЛИНЕ числа. Проверено на живой партии: 7 из 7 верных на двузначных
+    числах, 1 из 1 испорчен на трёхзначном — граница ровно там."""
     if field not in dec_fields:
         return text, None
     if re.search(r"\d[.,]\d", text):
         return text, None                # разделитель уже есть
     digits = re.sub(r"\D", "", text)
-    if len(digits) < 2 or digits != text.strip():
-        return text, None                # не голое число — не наше дело
+    if len(digits) != 2 or digits != text.strip():
+        return text, None                # не голое двузначное число — не наше дело
     pos = separator(crop, len(digits))
     if pos is None or not (0 < pos < len(digits)):
         return text, None
