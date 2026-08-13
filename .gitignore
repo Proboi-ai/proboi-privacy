@@ -6,6 +6,9 @@ artifacts/
 __pycache__/
 *.pyc
 .DS_Store
+.env
+.env.*
+!.env.example
 
 # Продажные презентации — не для публичного репозитория
 *.pptx
